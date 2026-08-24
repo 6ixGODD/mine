@@ -26,11 +26,13 @@ and workspace commands consume the repaired value after initialization.
 - created from the latest accepted stable baseline by an authorized MINE Skill;
 - owns the active `docs/plan/` workspace;
 - receives independently accepted plan branches;
+- remains checked out in the main (Root) worktree throughout unreleased work;
 - is deleted after stable release integration.
 
 ### `plan/<id>-<slug>`
 
 - short-lived implementation/review branch based on accepted `dev`;
+- is checked out only in its registered linked worktree, never by switching the Root;
 - owns one plan unless an explicit parallel-lane design says otherwise;
 - is merged into `dev` only after independent acceptance;
 - is deleted after successful integration.
@@ -60,6 +62,10 @@ The authorization excludes:
 - deleting remote branches unless the user explicitly requests it.
 
 Dirty or ambiguous worktree state blocks branch mutation until safely classified.
+
+The exact Root/linked-worktree ownership, graph authority, preparation,
+acceptance merge, conflict recovery, and cleanup contracts are specified in
+[Plan worktree and integration lifecycle](worktree-and-integration-lifecycle.md).
 
 ## Repository initialization
 
@@ -95,9 +101,29 @@ never rewritten by compensation rewiring, preserving their immutability.
 Downstream work that depended on the rejected plan may only resume after the
 rewiring is accepted into `dev` and the compensating plan is itself accepted.
 
+### Infeasible active Plan
+
+An executor that proves an immutable `IN_PROGRESS` Plan infeasible stops and
+preserves its branch/worktree; it never marks the node `IMPLEMENTED` merely to
+reach rejection. After a Root-visible independent report and explicit owner
+approval of any material replacement decision, `mine plan reject` may perform
+the evidence-bound `IN_PROGRESS -> REJECTED` transition defined in the graph
+state machine. It requires the next sibling compensation and uses the same
+terminal rejection, preservation, registration, and rewiring contracts above.
+There is no hand-edited graph, revived node, or separate cancellation lineage.
+
+If recovery infrastructure itself must change before that transition is
+available, the stopped Plan's write lane is explicitly frozen and one
+serialized governance-recovery Plan may take ownership of the overlapping
+central paths. No executor may resume the frozen Plan concurrently. After the
+recovery Plan is accepted, the original Plan is rejected through the new
+validated command and its compensation resumes in the preserved lineage
+worktree.
+
 ## Plan workspace creation
 
-`mine-plan-create` ensures `dev` exists, switches to it, and opens an internal plan workspace when absent.
+`mine-plan-create` ensures `dev` exists in the Root worktree and opens an
+internal plan workspace when absent. It never switches Root to a Plan branch.
 
 The workspace has a generated `workspace_id`; the user does not supply a workspace version. The workspace marker records repository ID, stable baseline commit, integration branch, creation time, and MINE ownership.
 
@@ -124,14 +150,17 @@ upstream), which the accept pass cannot reach.
 - Reports and graph state are temporary but committed on managed development branches for reviewability.
 - `docs/design/` on `dev` describes approved target behavior.
 - Every plan references exact design paths and anchors.
-- Execution agents commit scoped implementation but never self-accept.
+- Execution agents commit scoped implementation in the registered Plan
+  worktree but never self-accept.
 - Design changes precede plans.
 - Plan files are immutable after execution starts.
 - Reports and graph state are temporary but committed on managed development branches for reviewability.
 - `docs/design/` on `dev` describes approved target behavior.
 - Every plan references exact design paths and anchors.
 - Execution agents commit scoped implementation but never self-accept.
-- Review agents may merge accepted work into `dev` and remove the local accepted plan branch.
+- Review agents integrate positively reviewed work into Root `dev` before
+  recording `ACCEPTED`; only then may they remove the clean linked worktree and
+  merged local Plan branch.
 
 ## Lightweight maintenance boundary
 

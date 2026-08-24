@@ -15,6 +15,8 @@
 - Verify external behavior against opened official or primary documentation and link the exact source in architecture and plans.
 - Follow SOLID at real change boundaries. Do not create speculative interfaces, factories, plugin systems, or indirection without a demonstrated variation or testing boundary.
 - Update architecture before creating a plan that depends on changed architecture.
+- Material decisions enter planning only through digest-bound ADR approval;
+  `mine-arch` never self-approves and must report scoped readiness.
 
 ## No historical baggage by default
 This is a new project unless the user explicitly states otherwise. When a later accepted design conflicts with an earlier internal implementation, change the target implementation directly. Do not keep reserved fields, obsolete parameters, compatibility aliases, dead interfaces, transitional adapters, duplicate schemas, or shims solely to preserve an abandoned plan. If cleanup is too large, create an explicit follow-up plan to remove the obsolete design rather than silently retaining technical debt.
@@ -35,6 +37,9 @@ This is a new project unless the user explicitly states otherwise. When a later 
 - Ask the user when an uncovered decision changes product behavior, architecture, persistence, public contracts, security/privacy, compatibility, deployment responsibility, or acceptance criteria.
 - Resolve bounded local implementation decisions using architecture, official documentation, and repository convention; record them in the implementation report.
 - Preserve unrelated changes and stage only explicit in-scope files.
+- New Plan IDs and filenames use the canonical `planNN(?:-NN)*(?:-CNN)?`
+  grammar and exact `docs/plan/<id>-<lower-kebab-slug>.md` form; legacy aliases
+  are not created.
 
 ## Lightweight maintenance
 
@@ -44,6 +49,20 @@ MINE governs engineering change, not every repository edit. Direct, bounded, beh
 - Use MINE CLI/MCP to query and transition `docs/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
 - Parallel lanes require disjoint write scopes, one owner per shared file, explicit start gates, join gates, and integration ownership.
 - Manifests, lockfiles, migrations, generated schemas/clients, root quality configuration, central registries, the execution graph, and reports are serialized unless a plan explicitly assigns one owner.
+
+### Shared environment and Plan-isolated mutable outputs
+
+- Reuse Root-managed toolchains, dependency downloads, virtual environments,
+  and only caches proven read-only or safely content-addressed.
+- Never create `.venv`, `venv`, `target`, `node_modules`, or an equivalent
+  environment/cache tree inside a linked Plan worktree.
+- Mutable build, test, generation, coverage, packaging, and runner outputs use
+  `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. Rust adapters set
+  `CARGO_TARGET_DIR` to the exact Plan namespace, such as
+  `<Root>/.mine/build/<exact-plan-id>/cargo-target`.
+- Before an exceptionally large build, record a measured size estimate and
+  pause for explicit owner agreement on serialization, a coarser exclusive
+  namespace, and cleanup. Never silently use a globally shared mutable path.
 
 ## Repository quality gates
 `mine-arch` must replace this table with the actual repository commands and configuration sources.

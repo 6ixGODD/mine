@@ -21,6 +21,8 @@ fn node(id: &str, hard: &[&str], excl: &[&str]) -> PlanNode {
         id: id.to_string(),
         path: format!("docs/plan/{id}.md"),
         title: format!("Plan {id}"),
+        branch: String::new(),
+        branch_anchor: String::new(),
         status: PlanStatus::Blocked,
         hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
         soft_predecessors: vec![],
@@ -37,15 +39,17 @@ fn node(id: &str, hard: &[&str], excl: &[&str]) -> PlanNode {
         updated_at: String::new(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        lineage_id: String::new(),
+        worktree_path: String::new(),
     }
 }
 
 fn workspace(plans: Vec<PlanNode>) -> PlanWorkspace {
     PlanWorkspace {
-        schema_version: 1,
+        schema_version: mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
         revision: 0,
         project_id: "test".to_string(),
-        workspace_id: "test-ws".to_string(),
+        workspace_id: "bootstrap-mine-v1".to_string(),
         stable_branch: "master".to_string(),
         integration_branch: "dev".to_string(),
         stable_baseline_commit: String::new(),

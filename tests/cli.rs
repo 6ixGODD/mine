@@ -243,6 +243,13 @@ fn graph_render_is_deterministic_and_idempotent() {
 fn temp_copy_of_real_graph() -> tempfile::TempDir {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let tmp = tempfile::tempdir().unwrap();
+    let clone = std::process::Command::new("git")
+        .args(["clone", "--quiet", "--no-checkout"])
+        .arg(&repo_root)
+        .arg(tmp.path())
+        .status()
+        .unwrap();
+    assert!(clone.success(), "temporary graph repo clone must succeed");
     std::fs::create_dir_all(tmp.path().join("docs/plan")).unwrap();
     std::fs::create_dir_all(tmp.path().join(".mine")).unwrap();
     let cfg = mine::cli::context::load_config(&repo_root).expect("real config exists");
@@ -253,6 +260,39 @@ fn temp_copy_of_real_graph() -> tempfile::TempDir {
     )
     .unwrap();
     tmp
+}
+
+#[test]
+fn cli_reads_writes_and_v3_repair_fail_closed_on_a_forged_anchor() {
+    let tmp = temp_copy_of_real_graph();
+    let toml_path = tmp.path().join("docs/plan/execution-graph.toml");
+    let mut workspace =
+        toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
+    workspace.plans[0].branch_anchor = "HEAD".to_string();
+    std::fs::write(&toml_path, toml::to_string(&workspace).unwrap()).unwrap();
+    let before = std::fs::read(&toml_path).unwrap();
+
+    let revision = workspace.revision.to_string();
+    let commands = [
+        vec!["graph", "validate", "--format", "json"],
+        vec!["graph", "status", "--format", "json"],
+        vec!["plan", "start", "--id", "02-1", "--format", "json"],
+        vec![
+            "graph",
+            "repair-provenance",
+            "--expected-revision",
+            revision.as_str(),
+            "--format",
+            "json",
+        ],
+    ];
+    for command in commands {
+        let outcome = cli::dispatch(&run(tmp.path().to_str().unwrap(), &command), "mine");
+        let env = envelope_json(&outcome);
+        assert_eq!(outcome.exit_code, 4, "command {command:?}: {env}");
+        assert_eq!(env["error"]["code"], "MINE_GRAPH_INVALID");
+        assert_eq!(std::fs::read(&toml_path).unwrap(), before);
+    }
 }
 
 #[test]
@@ -311,6 +351,8 @@ fn plan_accept_requires_implemented_state() {
         id: "99-test".to_string(),
         path: "docs/plan/99-test.md".to_string(),
         title: "99-test".to_string(),
+        branch: String::new(),
+        branch_anchor: String::new(),
         status: PlanStatus::InProgress,
         hard_predecessors: vec!["02-1".to_string()],
         soft_predecessors: vec![],
@@ -327,6 +369,8 @@ fn plan_accept_requires_implemented_state() {
         updated_at: "2026-07-23T00:00:00Z".to_string(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        lineage_id: String::new(),
+        worktree_path: String::new(),
     });
     std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
 
@@ -360,12 +404,12 @@ fn plan_accept_requires_implemented_state() {
 }
 
 #[test]
-fn plan_lifecycle_start_implemented_accept_releases_successor() {
+fn plan_lifecycle_implemented_accept_releases_successor() {
     // Independent-review addition (reviewer-owned; tests/cli.rs is a
     // exclusive path). The implementation's own suite covered only the
     // *negative* plan-lifecycle CLI paths (refused start/accept). This test
-    // exercises the full *positive* path end to end through the real CLI
-    // dispatcher: start -> implemented -> accept, asserting that acceptance
+    // exercises the post-start positive path end to end through the real CLI
+    // dispatcher: implemented -> accept, asserting that acceptance
     // releases a BLOCKED successor to READY only once its complete
     // hard-predecessor set is satisfied. Operates entirely on a TEMP COPY of
     // the real graph with two synthetic nodes; the live repository graph is
@@ -376,8 +420,9 @@ fn plan_lifecycle_start_implemented_accept_releases_successor() {
     let tmp = temp_copy_of_real_graph();
     let toml_path = tmp.path().join("docs/plan/execution-graph.toml");
 
-    // Inject a READY node whose sole hard predecessor ("02-1") is already
-    // ACCEPTED in the real graph, and a BLOCKED successor gated on it.
+    // Inject an IN_PROGRESS node whose sole hard predecessor ("02-1") is
+    // already ACCEPTED in the real graph, and a BLOCKED successor gated on it.
+    // Real-Git start/anchor capture is covered in tests/plan_prepare.rs.
     let mut ws =
         toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
     use mine::domain::graph::PlanNode;
@@ -386,6 +431,8 @@ fn plan_lifecycle_start_implemented_accept_releases_successor() {
         id: id.to_string(),
         path: format!("docs/plan/{id}-test.md"),
         title: format!("{id}-test"),
+        branch: String::new(),
+        branch_anchor: String::new(),
         status,
         hard_predecessors: hard.into_iter().map(str::to_string).collect(),
         soft_predecessors: vec![],
@@ -402,9 +449,14 @@ fn plan_lifecycle_start_implemented_accept_releases_successor() {
         updated_at: String::new(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        lineage_id: String::new(),
+        worktree_path: String::new(),
     };
-    ws.plans
-        .push(blank_node("99-lifecycle", PlanStatus::Ready, vec!["02-1"]));
+    ws.plans.push(blank_node(
+        "99-lifecycle",
+        PlanStatus::InProgress,
+        vec!["02-1"],
+    ));
     ws.plans.push(blank_node(
         "99-successor",
         PlanStatus::Blocked,
@@ -412,23 +464,7 @@ fn plan_lifecycle_start_implemented_accept_releases_successor() {
     ));
     std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
 
-    // 1) start: READY -> IN_PROGRESS.
-    let outcome = cli::dispatch(
-        &run(
-            tmp.path().to_str().unwrap(),
-            &["plan", "start", "--id", "99-lifecycle", "--format", "json"],
-        ),
-        "mine",
-    );
-    assert_eq!(outcome.exit_code, 0, "start must succeed: {outcome:?}");
-    let after_start =
-        toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
-    assert_eq!(
-        after_start.get("99-lifecycle").unwrap().status,
-        PlanStatus::InProgress
-    );
-
-    // 2) implemented: IN_PROGRESS -> IMPLEMENTED.
+    // 1) implemented: IN_PROGRESS -> IMPLEMENTED.
     let outcome = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
@@ -458,7 +494,7 @@ fn plan_lifecycle_start_implemented_accept_releases_successor() {
         PlanStatus::Implemented
     );
 
-    // 3) accept: IMPLEMENTED -> ACCEPTED, releasing the BLOCKED successor to
+    // 2) accept: IMPLEMENTED -> ACCEPTED, releasing the BLOCKED successor to
     //    READY (its sole hard predecessor is now accepted).
     let outcome = cli::dispatch(
         &run(
@@ -558,7 +594,7 @@ fn revision_conflict_surfaces_exit_5() {
     let _ = cli::dispatch(&run(repo, &["init", "--quiet"]), "mine");
     let store = TomlStore::new(root.path());
     let ws = PlanWorkspace {
-        schema_version: 1,
+        schema_version: mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
         revision: 3,
         project_id: "p".to_string(),
         workspace_id: "ws".to_string(),

@@ -303,7 +303,7 @@ pub struct SetupArgs {
     /// non-TTY selector fallback uses all detected).
     pub yes: bool,
     /// `--config-root <path>`: isolated config root (CI/tests). When set,
-    /// setup uses [`Env::isolated`] and never touches the real environment.
+    /// setup uses [`crate::agent_setup::targets::Env::isolated`] and never touches the real environment.
     pub config_root: Option<PathBuf>,
 }
 

@@ -21,6 +21,7 @@ REJECTED
 | BLOCKED | READY | All blocking conditions resolved (automatic successor release inside `mine plan accept`, or the blocker's own acceptance) |
 | READY | IN_PROGRESS | Successful start, owner assigned, revision matches |
 | IN_PROGRESS | IMPLEMENTED | Report and commit evidence registered |
+| IN_PROGRESS | REJECTED | Independent evidence proves the immutable Plan infeasible or materially invalid; canonical review report and compensation recorded |
 | IMPLEMENTED | ACCEPTED | Independent review passes every hard contract |
 | IMPLEMENTED | REJECTED | Independent review finds material failure |
 
@@ -40,6 +41,55 @@ accepted CLI; neither changes the rejected plan's status:
    [Compensation rewiring](#compensation-rewiring) below).
 
 No generic `set-status` exists.
+
+## Start-time branch anchor
+
+`mine plan start` is both the execution-owner transition and the provenance
+boundary for Plan branch history. Under the authoritative Root graph lock it
+revalidates the exact registered linked worktree before changing status:
+
+1. Root is clean and checked out on the configured integration branch;
+2. the registered worktree path, branch, observed HEAD, and branch tip agree;
+3. for a base Plan, that tip equals the current Root integration HEAD;
+4. for a compensation, that tip equals the preserved branch tip of the
+   rejected predecessor which declared this compensation; and
+5. the resolved tip is a Git commit object.
+
+The successful `READY -> IN_PROGRESS` transaction writes that commit as the
+node's immutable `branch_anchor` together with owner, run ID, and timestamps.
+No Plan mutation may begin before this succeeds. A later Root graph commit is
+expected to diverge from the Plan branch at this anchor and is never merged
+into the Plan merely to manufacture ancestry.
+
+For `IN_PROGRESS` and `IMPLEMENTED`, linked-worktree reuse reads the stored
+anchor and requires `git merge-base --is-ancestor <anchor> <tip>` plus exact
+observed-HEAD/branch-tip parity. It does not recompute the anchor from current
+Root HEAD. `READY` remains exact-initial-anchor only. Rewritten or unrelated
+history is invalid.
+
+## Execution-discovered infeasibility rejection
+
+`IN_PROGRESS -> REJECTED` is a narrow recovery edge for an immutable Plan that
+cannot be completed without contradicting its own accepted scope or making an
+unauthorized material Design change. The executor stops and preserves evidence;
+it does not invoke the transition on itself.
+
+An independent reviewer or `mine-arch`, after explicit repository-owner
+approval of any material replacement decision, supplies:
+
+- a non-empty reason;
+- a Root-visible canonical review report documenting the immutable conflict,
+  exact commands and exit codes, branch/worktree preservation, and why the
+  issue cannot be corrected within scope; and
+- the next canonical sibling compensation ID.
+
+Under the graph lock, `mine plan reject` rechecks revision and status, validates
+the report path/file and compensation identity, then records `REJECTED`, report,
+reason, compensation, and timestamp in one revision. It records no fabricated
+implementation report or commits. The rejected branch is not merged; its
+lineage worktree remains for compensation. This edge is not available for
+timeouts, correctable implementation defects, owner reassignment, or routine
+cancellation.
 
 ## Plan release
 
@@ -127,6 +177,20 @@ Validation includes unique IDs/paths, valid predecessors, acyclic hard dependenc
 A node is ready only when every hard predecessor is accepted, design references are valid, no material decision remains, path ownership does not conflict, and stored state allows readiness.
 
 ## Compensation rewiring
+
+### Compensation identity and worktree lineage
+
+A rejected plan may name only the next canonical compensation ID in its own
+lineage. The base rejection names `C01`; rejection of `C01` names sibling
+`C02`, and so on without gaps. Registration of that compensation requires the
+exact declared ID, the same derived lineage/worktree path, and the rejected
+node's hard predecessors. It never makes the terminal rejected node a hard
+predecessor.
+
+Rewiring remains exact and stepwise: base successors move to C01; if C01 is
+later rejected, its mutable successors move to C02. Similar-looking IDs never
+participate. Git preparation preserves each rejected branch ref and switches
+the single clean lineage worktree to the new compensation branch.
 
 `mine plan rewire-compensation --id <rejected-id>` is a deterministic,
 first-class graph operation that replaces an explicitly rejected predecessor

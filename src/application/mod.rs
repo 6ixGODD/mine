@@ -12,6 +12,7 @@
 //!   shared services the CLI `plan.*`/`graph.*`/`design.*` handlers and the
 //!   MCP `mine_plan_*`/`mine_graph_*`/`mine_design_*` tools both call.
 
+pub mod adr_service;
 pub mod agent_service;
 pub mod design_service;
 pub mod doctor_service;

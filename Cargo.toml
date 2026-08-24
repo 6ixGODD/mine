@@ -1,6 +1,6 @@
 [package]
 name = "mine"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2024"
 rust-version = "1.85"
 description = "MINE Is Not Everyone's: deterministic engineering-workflow core for Claude Code, Codex, Pi, and OpenCode"
@@ -25,6 +25,7 @@ uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["formatting"] }
 fs4 = "1.1.0"
 serde_json = "1"
+sha2 = "0.10"
 schemars = { version = "1", features = ["preserve_order"] }
 rmcp = { version = "2.2.0", features = ["transport-io"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

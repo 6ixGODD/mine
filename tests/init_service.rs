@@ -113,6 +113,7 @@ fn absent_design_root_creates_scaffold_marker_and_config() {
     let ignore_content = fs::read_to_string(gitignore).unwrap();
     assert!(ignore_content.contains("runtime/"));
     assert!(ignore_content.contains("locks/"));
+    assert!(ignore_content.contains("build/"));
 
     // AGENTS.md created.
     assert!(root.join("AGENTS.md").exists());

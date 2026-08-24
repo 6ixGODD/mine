@@ -63,6 +63,10 @@ pub fn exit_code_for(err: &MineError) -> i32 {
         | MineError::GraphInvalid { .. }
         | MineError::GraphCycle { .. }
         | MineError::PlanNotFound { .. }
+        | MineError::InvalidPlanIdentity { .. }
+        | MineError::AdrNotFound { .. }
+        | MineError::AdrRegistryInvalid { .. }
+        | MineError::AdrDigestMismatch { .. }
         | MineError::InvalidTransition { .. }
         | MineError::PredecessorNotAccepted { .. }
         | MineError::WriteScopeConflict { .. } => exit_code::VALIDATION,

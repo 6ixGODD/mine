@@ -41,6 +41,10 @@ pub const ACCEPTED_MCP_TOOLS: &[&str] = &[
     "mine_graph_wave",
     "mine_plan_show",
     "mine_design_validate",
+    "mine_adr_show",
+    "mine_adr_list",
+    "mine_adr_validate",
+    "mine_design_readiness",
     "mine_plan_add",
     "mine_plan_start",
     "mine_plan_mark_implemented",
@@ -99,7 +103,7 @@ fn walkdir(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Extracts candidate MCP tool-name tokens (`mine_<verb>_<noun>`) from text.
-/// Only tokens that match the accepted twelve-tool surface are returned; this
+/// Only tokens that match the accepted MCP tool surface are returned; this
 /// is used to verify Skills never reference a stale or invented MCP tool.
 pub fn mcp_tool_refs(body: &str) -> Vec<&str> {
     let accepted: std::collections::HashSet<&str> = ACCEPTED_MCP_TOOLS.iter().copied().collect();

@@ -7,6 +7,12 @@
 
 ## User-visible outcome
 
+## Canonical Plan identity
+- ID: `planNN(?:-NN)*(?:-CNN)?`
+- Filename: `docs/plan/<id>-<lower-kebab-slug>.md`
+- Lineage/worktree identity: derive from the typed Plan-ID contract; do not
+  duplicate parsing or compensation-number logic in the Plan.
+
 ## Governing design references
 - `docs/design/<area>/<leaf>.md#<anchor>` (cite exact design leaves and anchors under `docs/design/` — progressive disclosure rooted at `docs/design/index.md`; MINE owns `docs/design/`)
 
@@ -58,6 +64,18 @@ flowchart LR
 - Narrow verification commands and expected evidence:
 - Downstream artifact:
 - Suggested commit:
+
+## Mutable output ownership
+
+Every Plan owns mutable build, test, generation, coverage, packaging, and
+runner output beneath `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`.
+Compensation nodes use a fresh namespace even when they reuse a lineage
+worktree. Reuse Root-managed toolchains, dependency downloads, virtual
+environments, and only demonstrably safe shared caches; never create a local
+`target`, `.venv`, `venv`, `node_modules`, or equivalent output tree in a Plan
+worktree. For Rust, verification must set `CARGO_TARGET_DIR` to the Plan's
+`cargo-target` directory. If measured size is predictably exceptional, record
+the estimate and pause for explicit owner agreement before relaxing isolation.
 
 ## Integration and join procedure
 

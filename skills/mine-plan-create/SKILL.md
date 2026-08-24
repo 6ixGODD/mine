@@ -1,7 +1,7 @@
 ---
 name: mine-plan-create
 description: "Create or update an evidence-backed, architecture-governed software implementation plan that is precise enough for independent coding agents to execute without rediscovering design decisions. Scope-first: an explicit user scope defines the planning boundary; research-backed: substantive planning requires mandatory scope-bounded web research comparing established practice; evidence-on-demand: repository inspection is proportional to scope. Use for initial project planning, incremental features, refactors, migrations, agent workflows, data/retrieval/tool contracts, or compensating plans. Routes material Design gaps back to mine-arch; never silently overrides accepted Design."
-version: 0.1.9
+version: 0.1.10
 ---
 
 # MINE Plan Create
@@ -32,6 +32,10 @@ The accepted MCP tools `mine-plan-create` may use:
 - `mine_graph_validate` (no arguments) - validate the graph after registration.
 - `mine_graph_ready` (no arguments) - read the ready frontier.
 - `mine_plan_show` (`id`) - look up a plan node.
+- `mine_design_readiness` (`scope`?) - verify that applicable planning-blocking
+  ADRs and the detailed Design are ready for the requested scope.
+- `mine_adr_show` (`id`) / `mine_adr_list` / `mine_adr_validate` - inspect the
+  digest-bound ADR registry before planning.
 - `mine_plan_add` (`id`, `path`, `title`, `design_references`,
   `exclusive_write_paths`?, `hard_predecessors`?) - register a new `DRAFT`
   plan node.
@@ -49,6 +53,20 @@ registered-add path):
 
 When a required operation has no MCP tool, fall back to the JSON CLI and state
 the fallback explicitly.
+
+### Canonical identity and readiness gate
+
+Before registering a Plan, require `mine design readiness --scope <scope>`
+through the read-only MCP equivalent when available. Stop and report every
+applicable unresolved planning-blocking ADR; do not propose or infer approval.
+
+Allocate or validate one canonical ID matching
+`planNN(?:-NN)*(?:-CNN)?`, with two-digit numeric segments and an uppercase
+`C` compensation suffix only at the end. The filename must be exactly
+`docs/plan/<id>-<lower-kebab-slug>.md`; compensation Plans use the next
+contiguous sibling `C` ordinal in the same lineage. Do not register legacy
+IDs or create aliases. Use the actual binary's validation error as the
+authoritative diagnostic when an ID or path is invalid.
 
 ## Required repository artifacts
 
@@ -162,6 +180,13 @@ In an established repository with an accepted baseline:
    local, fully-verifiable correction — including one discovered during independent review or during release closure — is the reviewer's or
    executor's direct fix, documented in its own report, not a new plan. Do not create a plan merely to preserve reviewer/implementer role
    purity.
+
+When an immutable `IN_PROGRESS` Plan is objectively infeasible, do not edit,
+replace, or pretend to complete it. Planning may define the approved
+stored-anchor/schema recovery and the later compensation sequence only after
+Design and any material ADR decision authorize that stored-anchor schema recovery. The stopped
+Plan remains frozen until an independent reviewer records canonical evidence
+and uses the bounded active-rejection transition; only then register the next contiguous sibling compensation and reuse the existing lineage worktree.
 
 ## Phase 2: Gather evidence proportional to scope
 
@@ -390,6 +415,9 @@ Do not edit `docs/plan/execution-graph.toml` or `docs/plan/execution-graph.md` d
 1. Read the current graph revision: call `mine_graph_status` (MCP) or `mine
    graph status --format json` (CLI fallback). The envelope's `data.revision`
    is the current revision; carry it as `expected_revision` on the write.
+   Before the registration write, run scoped design readiness and confirm the
+   requested canonical Plan ID/path. A failed readiness check is a planning
+   blocker, not permission to register a DRAFT node.
 2. Register the plan: call `mine_plan_add` (MCP) with `id`, `path`, `title`,
    `design_references`, and optional `exclusive_write_paths` /
    `hard_predecessors`; or `mine plan add --format json` (CLI fallback) with
@@ -435,3 +463,19 @@ Before finishing, verify all of the following:
 - No unrelated files are modified or staged; the invocation scope was respected.
 
 Finish with the created or updated architecture sections, plan path, graph status, parallel groups, unresolved gates, and the exact next executable work packages. Do not claim readiness when any required evidence is absent.
+
+## Shared toolchains and Plan-isolated mutable outputs
+
+Reuse Root-managed toolchains, dependency downloads, virtual environments, and
+only caches proven read-only or safely content-addressed. Do not create a
+second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
+cache directory in a linked Plan worktree.
+
+Mutable build, test, generation, coverage, packaging, and runner outputs must
+use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
+`CARGO_TARGET_DIR` to the exact Plan namespace, for example
+`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
+worktree-local `target`. If a measured output is predictably very large,
+record the estimate and pause for explicit owner agreement on serialization,
+a coarser exclusive namespace, and cleanup; never fall back automatically to a
+globally shared mutable directory.

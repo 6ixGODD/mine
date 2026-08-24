@@ -1,6 +1,6 @@
 # External Source Register
 
-Verified for this design revision on 2026-07-23. Implementation plans must re-check current official documentation before relying on unstable platform details.
+Verified for this design revision on 2026-08-24. Implementation plans must re-check current official documentation before relying on unstable platform details.
 
 | Area | Primary source | Design implication |
 |---|---|---|
@@ -14,3 +14,10 @@ Verified for this design revision on 2026-07-23. Implementation plans must re-ch
 | OpenCode MCP | https://opencode.ai/docs/mcp-servers/ | Local stdio MCP configuration and context-cost warning |
 | MCP transport | https://modelcontextprotocol.io/specification/2025-11-25/basic/transports | stdio process and protocol separation |
 | MCP Rust SDK | https://github.com/modelcontextprotocol/rust-sdk | Official Rust implementation basis |
+| Git linked worktrees | https://git-scm.com/docs/git-worktree | Use porcelain `-z`; linked worktrees isolate HEAD/index; never force branch/path reuse or dirty cleanup |
+| Git repository path discovery | https://git-scm.com/docs/git-rev-parse | Resolve current top-level/common storage without mistaking a linked checkout for Root |
+| Git commit ancestry | https://git-scm.com/docs/git-merge-base | `--is-ancestor` validates a persisted Plan anchor against its tip; sibling Root/Plan descendants are not ancestors of one another |
+| Git merge and recovery | https://git-scm.com/docs/git-merge | Start integration clean; complete or safely abort conflicts before graph acceptance |
+| Architecture Decision Records | https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions | Significant decisions are numbered, proposed/accepted, retained, and superseded rather than erased |
+| MADR 4.0 | https://adr.github.io/madr/ | ADRs record status, decision makers, alternatives, consequences, and confirmation |
+| adr-tools | https://github.com/npryce/adr-tools/blob/master/README.md | Monotonic decision log and linked supersession behavior |

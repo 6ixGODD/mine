@@ -21,6 +21,9 @@ MINE Is Not Everyone's. These are durable, repository-wide agreements. Package-s
 - Verify external behavior against opened official or primary documentation and link the exact source in design and plans.
 - Follow SOLID at real change boundaries. Do not create speculative interfaces, factories, plugin systems, or indirection without a demonstrated variation or testing boundary.
 - Update design before creating a plan that depends on changed design.
+- Material architecture decisions require repository-owner approval through the
+  ADR lifecycle before their scope is planning-ready. Agents never infer or
+  fabricate ADR approval; approved decisions are superseded, not reversed in place.
 
 ## No historical baggage by default
 
@@ -37,6 +40,14 @@ This is a new project unless the user explicitly states otherwise. When a later 
 - A plan becomes immutable when handed to an implementation agent, execution begins, or a report records execution.
 - Do not edit, rename, renumber, delete, or replace an immutable plan.
 - Correct design first, then create a next-numbered compensating plan.
+- If execution proves an immutable Plan infeasible, stop without claiming
+  `IMPLEMENTED`; after independent evidence and owner-approved Design, reject
+  it through the evidence-bound CLI transition and continue only through its
+  next sibling compensation. Never hand-edit graph state to escape
+  `IN_PROGRESS`.
+- Plan IDs follow `planNN(?:-NN)*(?:-CNN)?`; files are
+  `docs/plan/<id>-<slug>.md`. Compensation uses the next sibling `C` ordinal
+  and reuses the base lineage worktree.
 
 ## Plan execution
 
@@ -60,6 +71,25 @@ Changes that alter or establish durable engineering behavior (business/runtime b
 - Use MINE CLI/MCP to query and transition `docs/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
 - Parallel lanes require disjoint write scopes, one owner per shared file, explicit start gates, join gates, and integration ownership.
 - Manifests, lockfiles, migrations, generated schemas/clients, root quality configuration, central registries, the execution graph, and reports are serialized unless a plan explicitly assigns one owner.
+- While a Plan workspace is open, the main (Root) worktree remains on the
+  configured integration branch (`dev` here). Every Plan branch is checked out
+  only in its registered linked worktree; agents never switch Root to a Plan branch.
+- Graph reads, writes, revision checks, and locks always use Root `dev`, even
+  when a command is launched from a linked Plan worktree.
+- Plan worktrees reuse Root-owned toolchains, dependency downloads, virtual
+  environments, and demonstrably safe read-only or content-addressed caches;
+  they must not create duplicate `.venv`, `venv`, `target`, `node_modules`, or
+  equivalent environment/cache trees inside a linked worktree.
+- Mutable build, test, generation, coverage, packaging, and incremental outputs
+  are isolated by Plan node under Root-managed `.mine/build/<plan-id>/`, even
+  when a compensation node reuses its lineage worktree. Agents must not point
+  parallel Plans at one mutable output directory: green evidence must be
+  attributable to the exact Plan that produced it.
+- When per-Plan output isolation is impractical because measured disk cost is
+  exceptional (for example, full operating-system kernel builds), stop before
+  building and agree with the repository owner on a serialized/shared-output
+  strategy and cleanup boundary. Never silently weaken isolation. Missing or
+  mutable shared setup is serialized through the Root/integration owner.
 
 ## Branch governance
 
@@ -67,7 +97,7 @@ MINE manages three branch roles:
 
 - **Stable branch** (`master` for this repository): contains stable product state, configuration, root README files, and `docs/design/`. It must not contain `docs/plan/` or tracked design backups. Direct plan implementation on the stable branch is forbidden.
 - **`dev`**: temporary integration branch for the active body of work, created from the latest accepted stable baseline by an authorized MINE Skill. It owns the active `docs/plan/` workspace and receives independently accepted plan branches. It is deleted after stable release integration.
-- **`plan/<id>-<slug>`**: short-lived implementation/review branch based on accepted `dev`. It owns one plan and is merged into `dev` only after independent acceptance, then deleted.
+- **`plan/<id>-<slug>`**: short-lived implementation/review branch based on accepted `dev`, checked out only in a dedicated linked worktree. It owns one plan and is merged into Root `dev` by the independent reviewer as part of acceptance. Successful cleanup of its linked worktree and merged local branch is required before `ACCEPTED` is recorded.
 
 By invoking a MINE Skill, the repository owner grants the active agent authority to:
 

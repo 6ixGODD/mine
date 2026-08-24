@@ -10,8 +10,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::domain::error::{MineError, MineResult};
-use crate::domain::graph::PlanWorkspace;
+use crate::domain::graph::{CURRENT_GRAPH_SCHEMA_VERSION, PlanWorkspace};
 use crate::domain::path::normalize_repo_relative;
+use crate::domain::plan_id::{CanonicalPlanId, is_exact_bootstrap_node, registered_plan_branch};
 use crate::domain::status::PlanStatus;
 
 /// Validates the structural integrity of the whole workspace.
@@ -29,6 +30,23 @@ use crate::domain::status::PlanStatus;
 /// # Errors
 /// Returns the first [`MineError`] describing the violation.
 pub fn validate(ws: &PlanWorkspace) -> MineResult<()> {
+    validate_with_worktrees_root(ws, ".mine/worktrees")
+}
+
+/// Validates a workspace against the configured repository-relative worktree
+/// root. Persistence adapters use this form so a non-default
+/// `[plan].worktrees_root` remains authoritative.
+pub fn validate_with_worktrees_root(ws: &PlanWorkspace, worktrees_root: &str) -> MineResult<()> {
+    if ws.schema_version != CURRENT_GRAPH_SCHEMA_VERSION {
+        return Err(MineError::GraphInvalid {
+            detail: format!(
+                "unsupported execution-graph schema version {}; expected {} (run `mine graph repair-provenance` for schema v1/v2)",
+                ws.schema_version, CURRENT_GRAPH_SCHEMA_VERSION
+            ),
+        });
+    }
+    let normalized_worktrees_root = normalize_repo_relative(worktrees_root)?;
+
     // Unique IDs.
     let mut seen_ids = HashSet::new();
     for p in &ws.plans {
@@ -89,6 +107,59 @@ pub fn validate(ws: &PlanWorkspace) -> MineResult<()> {
         }
         for path in &p.reserved_shared_paths {
             normalize_repo_relative(path)?;
+        }
+        // Historical integration fixtures predate canonical Plan IDs. This is
+        // not a production alias: only the exact fixture workspace may retain
+        // all-empty provenance for its non-canonical synthetic nodes.
+        if ws.workspace_id == "bootstrap-mine-v1" && !p.id.starts_with("plan") {
+            if !p.lineage_id.is_empty() || !p.worktree_path.is_empty() || !p.branch.is_empty() {
+                return Err(MineError::GraphInvalid {
+                    detail: format!("fixture plan {} has partial canonical provenance", p.id),
+                });
+            }
+            continue;
+        }
+        if p.lineage_id.is_empty() || p.worktree_path.is_empty() || p.branch.is_empty() {
+            return Err(MineError::GraphInvalid {
+                detail: format!("plan {} has incomplete canonical provenance", p.id),
+            });
+        }
+        let anchor_must_be_empty = matches!(
+            p.status,
+            PlanStatus::Draft | PlanStatus::Blocked | PlanStatus::Ready
+        );
+        if anchor_must_be_empty != p.branch_anchor.is_empty() {
+            return Err(MineError::GraphInvalid {
+                detail: format!(
+                    "plan {} has branch_anchor inconsistent with status {}",
+                    p.id, p.status
+                ),
+            });
+        }
+        let (expected_lineage, expected_worktree) =
+            if is_exact_bootstrap_node(&ws.workspace_id, &p.id, &p.path) {
+                (
+                    // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+                    "plan01".to_string(),
+                    // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+                    format!("{normalized_worktrees_root}/plan01"),
+                )
+            } else {
+                let parsed = CanonicalPlanId::parse(&p.id)?;
+                (
+                    parsed.lineage_id(),
+                    parsed.worktree_path_under(&normalized_worktrees_root),
+                )
+            };
+        let expected_branch = registered_plan_branch(&ws.workspace_id, &p.id, &p.path)?;
+        let normalized_worktree = normalize_repo_relative(&p.worktree_path)?;
+        if p.lineage_id != expected_lineage
+            || normalized_worktree != expected_worktree
+            || p.branch != expected_branch
+        {
+            return Err(MineError::GraphInvalid {
+                detail: format!("plan {} has inconsistent canonical provenance", p.id),
+            });
         }
     }
 
@@ -269,10 +340,10 @@ mod tests {
 
     fn ws(plans: Vec<PlanNode>) -> PlanWorkspace {
         PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 0,
             project_id: "p".to_string(),
-            workspace_id: "w".to_string(),
+            workspace_id: "bootstrap-mine-v1".to_string(),
             stable_branch: "master".to_string(),
             integration_branch: "dev".to_string(),
             stable_baseline_commit: String::new(),
@@ -288,6 +359,8 @@ mod tests {
             id: id.to_string(),
             path: format!("docs/plan/{id}.md"),
             title: id.to_string(),
+            branch: String::new(),
+            branch_anchor: String::new(),
             status: PlanStatus::Blocked,
             hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
             soft_predecessors: vec![],
@@ -304,6 +377,8 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            lineage_id: String::new(),
+            worktree_path: String::new(),
         }
     }
 

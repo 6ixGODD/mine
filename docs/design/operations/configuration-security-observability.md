@@ -22,6 +22,8 @@ leaf_soft_limit_lines = 400
 
 [plan]
 root = "docs/plan"
+worktrees_root = ".mine/worktrees"
+shared_environment_root = "."
 ephemeral = true
 purge_before_stable_release = true
 
@@ -29,9 +31,14 @@ purge_before_stable_release = true
 source = "docs/plan/execution-graph.toml"
 rendered = "docs/plan/execution-graph.md"
 lock_timeout_ms = 5000
+
+[adr]
+registry = "docs/design/decisions/adr-registry.toml"
+rendered_index = "docs/design/decisions/index.md"
+lock_timeout_ms = 5000
 ```
 
-`mine init` detects the real stable branch; `master` is only this repository's current example. Machine-local absolute paths and secrets never belong in project configuration.
+`mine init` detects the real stable branch; `master` is only this repository's current example. `worktrees_root` and `shared_environment_root` are repository-relative, normalized, and containment-validated; they default to `.mine/worktrees` and `.` respectively. Root-managed mutable outputs derive beneath `.mine/build/<plan-id>/` from the exact Plan node, while reusable toolchains, dependency downloads, virtual environments, and safe content-addressed caches remain shared. Compensation nodes reuse their lineage worktree but not a rejected node's mutable build/test namespace. Machine-local absolute paths and secrets never belong in project configuration.
 
 ## User-level state
 
@@ -49,7 +56,9 @@ or real configuration root) and never contains secrets.
 
 - Human diagnostics go to stderr when stdout is structured output.
 - MCP stdout is protocol-only.
-- `.mine/runtime/events.jsonl` and `.mine/runtime/sync/` are local diagnostics, not fact sources.
+- `.mine/runtime/sync/` contains local agent-authored synchronization reports,
+  not a fact source. The current executable does not persist a general event
+  log.
 - Sensitive values and unrelated file contents are redacted.
 
 ## Security controls
@@ -61,6 +70,8 @@ or real configuration root) and never contains secrets.
 - verified local design backup before synchronization;
 - no broad deletion commands;
 - bounded managed-branch Git actions only;
+- linked worktrees only beneath the validated configured root, with no forced
+  add/remove/prune and no Root branch switching during unreleased work;
 - backups before external configuration changes (exact-byte, verified,
   recorded in the installation transaction; no mutation if backup fails);
 - exact ownership for uninstall (never inferred from a filename);

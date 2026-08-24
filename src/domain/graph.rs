@@ -8,17 +8,33 @@
 
 use std::collections::HashSet;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::domain::design_reference::{DesignReference, from_flat_paths};
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::path::{is_within, normalize_repo_relative};
 use crate::domain::status::PlanStatus;
 
+/// The only graph schema accepted by ordinary reads and lifecycle writes.
+pub const CURRENT_GRAPH_SCHEMA_VERSION: u32 = 3;
+
+/// The fail-closed provenance schema upgraded by Plan branch-anchor repair.
+pub const PREVIOUS_GRAPH_SCHEMA_VERSION: u32 = 2;
+
+/// The numeric bootstrap schema accepted only by the provenance repair path.
+pub const LEGACY_GRAPH_SCHEMA_VERSION: u32 = 1;
+
 /// The execution-graph aggregate root for an active plan workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanWorkspace {
-    /// Graph schema version.
+    /// Graph schema version. Version 2 is deliberately encoded as a string so
+    /// schema-v1 binaries, whose field type was `u32`, fail during parsing
+    /// before they can rewrite and discard fields they do not understand.
+    #[serde(
+        serialize_with = "serialize_graph_schema_version",
+        deserialize_with = "deserialize_graph_schema_version"
+    )]
     pub schema_version: u32,
     /// Monotonically increasing revision; incremented once per successful
     /// mutation.
@@ -46,6 +62,7 @@ pub struct PlanWorkspace {
 
 /// A plan node within the workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PlanNode {
     /// Stable plan identifier within the active workspace.
     pub id: String,
@@ -53,6 +70,12 @@ pub struct PlanNode {
     pub path: String,
     /// Human-readable title.
     pub title: String,
+    /// Registered managed branch derived from the canonical id and plan slug.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch: String,
+    /// Immutable creation commit captured atomically when execution starts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub branch_anchor: String,
     /// Lifecycle status.
     pub status: PlanStatus,
     /// Hard predecessors that must be `ACCEPTED` before this plan can start.
@@ -100,6 +123,47 @@ pub struct PlanNode {
     /// Compensation plan registered on rejection.
     #[serde(default)]
     pub compensating_plan: String,
+    /// Derived canonical base lineage identity.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub lineage_id: String,
+    /// Repository-relative lineage worktree locator.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub worktree_path: String,
+}
+
+fn serialize_graph_schema_version<S>(version: &u32, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    if *version == LEGACY_GRAPH_SCHEMA_VERSION {
+        serializer.serialize_u32(*version)
+    } else {
+        serializer.serialize_str(&format!("mine-graph-v{version}"))
+    }
+}
+
+fn deserialize_graph_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum WireVersion {
+        Legacy(u32),
+        Versioned(String),
+    }
+
+    match WireVersion::deserialize(deserializer)? {
+        WireVersion::Legacy(LEGACY_GRAPH_SCHEMA_VERSION) => Ok(LEGACY_GRAPH_SCHEMA_VERSION),
+        WireVersion::Legacy(version) => Err(serde::de::Error::custom(format!(
+            "numeric graph schema marker is valid only for legacy v1, got {version}"
+        ))),
+        WireVersion::Versioned(value) => value
+            .strip_prefix("mine-graph-v")
+            .ok_or_else(|| serde::de::Error::custom("invalid graph schema marker"))?
+            .parse::<u32>()
+            .map_err(serde::de::Error::custom),
+    }
 }
 
 impl PlanNode {
@@ -217,6 +281,8 @@ mod tests {
             id: id.to_string(),
             path: format!("docs/plan/{id}.md"),
             title: id.to_string(),
+            branch: format!("plan/{id}"),
+            branch_anchor: String::new(),
             status: PlanStatus::Blocked,
             hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
             soft_predecessors: vec![],
@@ -233,6 +299,8 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            lineage_id: String::new(),
+            worktree_path: String::new(),
         }
     }
 
@@ -270,7 +338,7 @@ mod tests {
     #[test]
     fn ancestor_walks_hard_predecessors() -> Result<(), MineError> {
         let ws = PlanWorkspace {
-            schema_version: 1,
+            schema_version: CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 0,
             project_id: "p".to_string(),
             workspace_id: "w".to_string(),

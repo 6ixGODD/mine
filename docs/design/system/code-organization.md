@@ -6,46 +6,57 @@ v1 uses one Rust package. Split crates only after stable boundaries and a real p
 
 ```text
 src/
+├── lib.rs
 ├── main.rs
 ├── cli/
 ├── mcp/
 ├── domain/
-│   ├── workspace.rs
+│   ├── config.rs
+│   ├── error.rs
+│   ├── ports.rs
 │   ├── graph.rs
-│   ├── plan.rs
+│   ├── adr.rs
+│   ├── plan_id.rs
+│   ├── plan_release.rs
+│   ├── rewire.rs
 │   ├── status.rs
-│   ├── transition.rs
 │   ├── path.rs
 │   ├── design_marker.rs
+│   ├── design_reference.rs
+│   ├── repository_identity.rs
 │   └── validation.rs
 ├── application/
 │   ├── init_service.rs
 │   ├── workspace_service.rs
 │   ├── graph_service.rs
 │   ├── plan_service.rs
+│   ├── adr_service.rs
 │   ├── design_service.rs
-│   ├── design_backup_service.rs
-│   ├── repository_version_service.rs
-│   ├── distribution_service.rs
 │   ├── agent_service.rs
-│   └── doctor_service.rs
+│   ├── doctor_service.rs
+│   ├── release_service.rs
+│   └── scan_service.rs
 ├── infrastructure/
 │   ├── toml_store.rs
+│   ├── adr_store.rs
 │   ├── atomic_write.rs
 │   ├── file_lock.rs
 │   ├── git.rs
-│   ├── repository_locator.rs
-│   ├── design_index.rs
 │   ├── design_backup.rs
 │   ├── embedded_skills.rs
-│   └── event_log.rs
+│   └── system.rs
 ├── render/
-│   └── markdown.rs
+├── setup/
 ├── agent_setup/
-│   ├── claude.rs
-│   ├── codex.rs
-│   ├── pi.rs
-│   └── opencode.rs
+│   ├── backup.rs
+│   ├── config_edit.rs
+│   ├── doctor.rs
+│   ├── install.rs
+│   ├── managed_state.rs
+│   ├── safety.rs
+│   ├── targets.rs
+│   ├── transaction.rs
+│   └── uninstall.rs
 └── output/
 ```
 
@@ -54,7 +65,8 @@ src/
 - Domain modules contain pure rules and typed errors.
 - Application modules define use cases and ports.
 - Infrastructure performs I/O.
-- Agent configuration formats stay behind one adapter per supported harness.
+- Agent configuration formats and target locations stay behind the shared
+  `agent_setup` adapters and typed `Agent` selection.
 - Root `skills/` is the only manually maintained Skill source.
 - No module parses both CLI arguments and domain state.
 

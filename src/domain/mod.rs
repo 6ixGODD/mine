@@ -7,12 +7,14 @@
 //! execution-graph aggregate, plan status and transition rules, path safety,
 //! design references, and graph validation/algorithms.
 
+pub mod adr;
 pub mod config;
 pub mod design_marker;
 pub mod design_reference;
 pub mod error;
 pub mod graph;
 pub mod path;
+pub mod plan_id;
 pub mod plan_release;
 pub mod ports;
 pub mod repository_identity;

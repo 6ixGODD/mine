@@ -175,9 +175,11 @@ fn self_hosted_plan_lifecycle_in_temp_repo() {
             "plan",
             "add",
             "--id",
-            "01",
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            "plan01",
             "--path",
-            "docs/plan/01.md",
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            "docs/plan/plan01-test.md",
             "--title",
             "Test",
             "--design-ref",
@@ -193,7 +195,8 @@ fn self_hosted_plan_lifecycle_in_temp_repo() {
     assert_eq!(env["data"]["plan"]["status"], "DRAFT");
     // Release.
     let (exit, env) = run(
-        &["plan", "release", "--id", "01", "--format", "json"],
+        // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+        &["plan", "release", "--id", "plan01", "--format", "json"],
         tmp.path(),
     );
     assert_eq!(exit, 0, "plan release: {env}");

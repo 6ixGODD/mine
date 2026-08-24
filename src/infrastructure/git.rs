@@ -1,11 +1,9 @@
-//! Read-only Git evidence.
+//! Controlled Git evidence and linked-worktree preparation.
 //!
 //! `docs/design/interfaces/cli-contract.md` and the branch-and-plan-lifecycle
-//! design require MINE to inspect repository Git state (current branch, HEAD
-//! commit, cleanliness, branch existence, ancestry). MINE never mutates Git
-//! state itself: it performs no commit, merge, reset, clean, stash, rebase,
-//! push, or branch deletion. This module exposes only **read-only** evidence
-//! queries.
+//! design require MINE to inspect repository Git state. MINE never commits,
+//! merges, resets, cleans, stashes, rebases, pushes, or deletes branches. The
+//! only mutations here are fixed-argument branch/worktree preparation calls.
 //!
 //! To adhere to "no arbitrary shell execution" (no `sh -c`), every query
 //! invokes `git` directly as a controlled subprocess with an explicit,
@@ -20,6 +18,18 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::domain::error::{MineError, MineResult};
+
+/// One stable `git worktree list --porcelain -z` record.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub head: String,
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub detached: bool,
+    pub locked: bool,
+    pub prunable: bool,
+}
 
 /// The git executable. Resolved from `PATH` (never via a shell).
 const GIT: &str = "git";
@@ -41,6 +51,112 @@ fn run_git(repo_root: &Path, args: &[&str]) -> MineResult<String> {
         ))));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_git_bytes(repo_root: &Path, args: &[&str]) -> MineResult<Vec<u8>> {
+    let output = Command::new(GIT)
+        .arg("-C")
+        .arg(repo_root)
+        .args(args)
+        .output()
+        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(MineError::Io(std::io::Error::other(format!(
+            "git {} failed: {stderr}",
+            args.join(" ")
+        ))));
+    }
+    Ok(output.stdout)
+}
+
+fn run_git_mutation(repo_root: &Path, args: &[&str]) -> MineResult<()> {
+    run_git(repo_root, args).map(|_| ())
+}
+
+/// Creates a local branch at `start` without switching Root.
+pub fn create_branch(repo_root: &Path, branch: &str, start: &str) -> MineResult<()> {
+    run_git_mutation(repo_root, &["branch", branch, start])
+}
+
+/// Adds a linked worktree for an existing branch, without force.
+pub fn add_worktree(repo_root: &Path, path: &Path, branch: &str) -> MineResult<()> {
+    let path = path.to_str().ok_or_else(|| MineError::GraphInvalid {
+        detail: "worktree path is not valid UTF-8".to_string(),
+    })?;
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    run_git_mutation(repo_root, &["worktree", "add", path, branch])
+}
+
+/// Switches a clean linked checkout to an existing branch.
+pub fn switch_branch(worktree: &Path, branch: &str) -> MineResult<()> {
+    run_git_mutation(worktree, &["switch", branch])
+}
+
+/// Parses Git's stable NUL-delimited worktree inventory. The first record is
+/// the main worktree and therefore the authoritative MINE integration root.
+pub fn list_worktrees(repo_root: &Path) -> MineResult<Vec<WorktreeInfo>> {
+    let bytes = run_git_bytes(repo_root, &["worktree", "list", "--porcelain", "-z"])?;
+    let mut records = Vec::new();
+    let mut current: Option<WorktreeInfo> = None;
+    for token in bytes.split(|byte| *byte == 0) {
+        if token.is_empty() {
+            if let Some(record) = current.take() {
+                records.push(record);
+            }
+            continue;
+        }
+        let line = String::from_utf8_lossy(token);
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(record) = current.take() {
+                records.push(record);
+            }
+            current = Some(WorktreeInfo {
+                path: path.to_string(),
+                head: String::new(),
+                branch: None,
+                bare: false,
+                detached: false,
+                locked: false,
+                prunable: false,
+            });
+        } else if let Some(record) = current.as_mut() {
+            if let Some(head) = line.strip_prefix("HEAD ") {
+                record.head = head.to_string();
+            } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                record.branch = Some(branch.to_string());
+            } else if line == "bare" {
+                record.bare = true;
+            } else if line == "detached" {
+                record.detached = true;
+            } else if line == "locked" || line.starts_with("locked ") {
+                record.locked = true;
+            } else if line == "prunable" || line.starts_with("prunable ") {
+                record.prunable = true;
+            }
+        }
+    }
+    if let Some(record) = current {
+        records.push(record);
+    }
+    if records.is_empty() {
+        return Err(MineError::Io(std::io::Error::other(
+            "git worktree list returned no records",
+        )));
+    }
+    Ok(records)
+}
+
+/// Resolves `(authoritative main worktree, caller worktree)` from any checkout
+/// belonging to the repository.
+pub fn authority_and_caller_root(start: &Path) -> MineResult<(PathBuf, PathBuf)> {
+    let caller = PathBuf::from(run_git(
+        start,
+        &["rev-parse", "--path-format=absolute", "--show-toplevel"],
+    )?)
+    .canonicalize()?;
+    let authority = PathBuf::from(&list_worktrees(&caller)?[0].path).canonicalize()?;
+    Ok((authority, caller))
 }
 
 /// Returns the current branch name (the symbolic-ref of `HEAD`), or `None` if
@@ -114,16 +230,52 @@ pub fn branch_exists(repo_root: &Path, name: &str) -> bool {
     .is_some_and(|code| !code.is_empty())
 }
 
+/// Resolves the commit at a local branch.
+pub fn head_of_branch(repo_root: &Path, name: &str) -> MineResult<String> {
+    resolve_commit(repo_root, &format!("refs/heads/{name}"))
+}
+
+/// Resolves a revision to its full commit object ID and rejects non-commits.
+pub fn resolve_commit(repo_root: &Path, revision: &str) -> MineResult<String> {
+    run_git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ],
+    )
+}
+
+/// Resolves the first parent of a commit to its full object ID.
+pub fn first_parent(repo_root: &Path, commit: &str) -> MineResult<String> {
+    resolve_commit(repo_root, &format!("{commit}^"))
+}
+
 /// Returns `true` if commit `ancestor` is an ancestor of commit `descendant`
 /// (i.e. `descendant` contains `ancestor` in its history).
 pub fn is_ancestor(repo_root: &Path, ancestor: &str, descendant: &str) -> bool {
-    Command::new(GIT)
+    is_ancestor_checked(repo_root, ancestor, descendant).unwrap_or(false)
+}
+
+/// Checks ancestry while preserving the distinction between a false relation
+/// and a Git invocation/object failure.
+pub fn is_ancestor_checked(repo_root: &Path, ancestor: &str, descendant: &str) -> MineResult<bool> {
+    let output = Command::new(GIT)
         .arg("-C")
         .arg(repo_root)
         .args(["merge-base", "--is-ancestor", ancestor, descendant])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        code => Err(MineError::Io(std::io::Error::other(format!(
+            "git merge-base --is-ancestor failed with status {code:?}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))),
+    }
 }
 
 /// Detects the stable branch for `repo_root`. Uses the configured default if
@@ -296,5 +448,27 @@ mod tests {
         let second = head_commit(dir.path()).unwrap();
         assert!(is_ancestor(dir.path(), &first, &second));
         assert!(!is_ancestor(dir.path(), &second, &first));
+    }
+
+    #[test]
+    fn porcelain_inventory_resolves_main_and_linked_roots() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let linked = dir.path().join("linked plan");
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            .args(["worktree", "add", "--quiet", "-b", "plan/plan01-test"])
+            .arg(&linked)
+            .status()
+            .unwrap();
+        let records = list_worktrees(&linked).unwrap();
+        assert_eq!(records.len(), 2);
+        // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+        assert_eq!(records[1].branch.as_deref(), Some("plan/plan01-test"));
+        let (authority, caller) = authority_and_caller_root(&linked).unwrap();
+        assert_eq!(authority, dir.path().canonicalize().unwrap());
+        assert_eq!(caller, linked.canonicalize().unwrap());
     }
 }

@@ -30,7 +30,7 @@ MINE Skills inside an agent harness
       ├─ Git evidence and managed-branch gateway
       ├─ design/plan path validation
       ├─ distribution and installer adapters
-      └─ diagnostic event log
+      └─ deterministic human/JSON/MCP output
 ```
 
 ## Trust boundaries

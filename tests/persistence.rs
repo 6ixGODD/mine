@@ -31,10 +31,10 @@ fn development_graph_path() -> PathBuf {
 
 fn sample_workspace(rev: u64) -> PlanWorkspace {
     PlanWorkspace {
-        schema_version: 1,
+        schema_version: mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
         revision: rev,
         project_id: "mine-is-not-everyones".to_string(),
-        workspace_id: "test-ws".to_string(),
+        workspace_id: "bootstrap-mine-v1".to_string(),
         stable_branch: "master".to_string(),
         integration_branch: "dev".to_string(),
         stable_baseline_commit: "abc123".to_string(),
@@ -45,6 +45,8 @@ fn sample_workspace(rev: u64) -> PlanWorkspace {
             id: "01".to_string(),
             path: "docs/plan/01.md".to_string(),
             title: "First plan".to_string(),
+            branch: String::new(),
+            branch_anchor: String::new(),
             status: PlanStatus::Ready,
             hard_predecessors: vec![],
             soft_predecessors: vec![],
@@ -61,6 +63,8 @@ fn sample_workspace(rev: u64) -> PlanWorkspace {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            lineage_id: String::new(),
+            worktree_path: String::new(),
         }],
     }
 }

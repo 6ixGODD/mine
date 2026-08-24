@@ -16,6 +16,7 @@
 // requires `unsafe` (for example file locking) must live inside a vetted
 // external dependency, not in this crate.
 #![forbid(unsafe_code)]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod agent_setup;
 pub mod application;

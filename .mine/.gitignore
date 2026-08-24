@@ -1,3 +1,4 @@
-# MINE runtime and locks are local diagnostics, not fact sources.
+# MINE runtime, locks, and mutable build outputs are local diagnostics, not fact sources.
 runtime/
 locks/
+build/

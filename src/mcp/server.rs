@@ -36,6 +36,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::application::adr_service::AdrService;
 use crate::application::design_service::DesignService;
 use crate::application::graph_service::{
     GraphService, PlanAcceptRequest, PlanAddRequest, PlanImplementedRequest, PlanRejectRequest,
@@ -44,6 +45,7 @@ use crate::application::graph_service::{
 use crate::application::plan_service::PlanService;
 use crate::cli::context::{GlobalOpts, OutputFormat, build_context, load_config};
 use crate::domain::error::MineError;
+use crate::domain::plan_id::CanonicalPlanId;
 use crate::domain::ports::Clock;
 use crate::infrastructure::system::SystemClock;
 
@@ -234,12 +236,12 @@ impl MineServer {
         };
         let graph = GraphService::new(&ctx.store);
         let svc = PlanService::new(&graph);
-        match svc.show(&args.id) {
-            Ok((rev, node)) => CallToolResult::structured(json!({
+        match svc.show_with_locations(&args.id, &ctx.caller_root) {
+            Ok(lookup) => CallToolResult::structured(json!({
                 "command": "plan.show",
                 "ok": true,
-                "revision": rev,
-                "data": { "plan": serde_json::to_value(&node).unwrap_or(Value::Null) },
+                "revision": lookup.authoritative_revision,
+                "data": { "plan": serde_json::to_value(&lookup).unwrap_or(Value::Null) },
             })),
             Err(e) => MineServer::tool_error(&e),
         }
@@ -274,7 +276,137 @@ impl MineServer {
         }
     }
 
-    // ------------------- mutating tools (5) -------------------
+    #[tool(
+        name = "mine_adr_show",
+        description = "Read-only lookup of one ADR registry entry and approval evidence.",
+        annotations(read_only_hint = true)
+    )]
+    fn mine_adr_show(&self, Parameters(args): Parameters<MineAdrShowArgs>) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let Some(config) = ctx.config.as_ref() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "no MINE config".to_string(),
+            });
+        };
+        match AdrService::new(&ctx.repo_root, config).show(&args.id) {
+            Ok(entry) => CallToolResult::structured(
+                json!({"command":"adr.show","ok":true,"data":{"adr":entry}}),
+            ),
+            Err(e) => MineServer::tool_error(&e),
+        }
+    }
+
+    #[tool(
+        name = "mine_adr_list",
+        description = "Read-only list of ADR registry entries.",
+        annotations(read_only_hint = true)
+    )]
+    fn mine_adr_list(&self) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let Some(config) = ctx.config.as_ref() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "no MINE config".to_string(),
+            });
+        };
+        match AdrService::new(&ctx.repo_root, config).list() {
+            Ok(entries) => CallToolResult::structured(
+                json!({"command":"adr.list","ok":true,"data":{"adrs":entries}}),
+            ),
+            Err(e) => MineServer::tool_error(&e),
+        }
+    }
+
+    #[tool(
+        name = "mine_adr_validate",
+        description = "Read-only validation of ADR registry structure and body digests.",
+        annotations(read_only_hint = true)
+    )]
+    fn mine_adr_validate(&self) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let Some(config) = ctx.config.as_ref() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "no MINE config".to_string(),
+            });
+        };
+        match AdrService::new(&ctx.repo_root, config).validate() {
+            Ok(registry) => CallToolResult::structured(
+                json!({"command":"adr.validate","ok":true,"data":{"valid":true,"revision":registry.revision,"count":registry.entries.len()}}),
+            ),
+            Err(e) => MineServer::tool_error(&e),
+        }
+    }
+
+    #[tool(
+        name = "mine_design_readiness",
+        description = "Read-only scoped ADR and Design planning readiness.",
+        annotations(read_only_hint = true)
+    )]
+    fn mine_design_readiness(
+        &self,
+        Parameters(args): Parameters<MineDesignReadinessArgs>,
+    ) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let Some(config) = ctx.config.as_ref() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "no MINE config".to_string(),
+            });
+        };
+        match AdrService::new(&ctx.repo_root, config).readiness(args.scope.as_deref()) {
+            Ok(readiness) => CallToolResult::structured(
+                json!({"command":"design.readiness","ok":true,"data":readiness}),
+            ),
+            Err(e) => MineServer::tool_error(&e),
+        }
+    }
+
+    // ------------------- mutating tools (6) -------------------
+
+    #[tool(
+        name = "mine_graph_repair_provenance",
+        description = "Revision-checked repair of supported schema-v1 Plan provenance; upgrades the graph to the fail-closed current schema and is idempotent once repaired.",
+        annotations(read_only_hint = false)
+    )]
+    fn mine_graph_repair_provenance(
+        &self,
+        Parameters(args): Parameters<MineGraphRepairProvenanceArgs>,
+    ) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let graph = GraphService::new(&ctx.store);
+        match graph.repair_provenance(args.expected_revision) {
+            Ok(outcome) => CallToolResult::structured(json!({
+                "command": "graph.repair-provenance",
+                "ok": true,
+                "revision_before": outcome.revision_before,
+                "revision_after": outcome.revision_after,
+                "data": {
+                    "changed": outcome.changed,
+                    "repaired_plans": outcome.repaired_plans,
+                    "schema_version": outcome.workspace.schema_version,
+                },
+            })),
+            Err(error) => MineServer::tool_error(&error),
+        }
+    }
 
     #[tool(
         name = "mine_plan_add",
@@ -292,6 +424,16 @@ impl MineServer {
                 ),
             ]));
         };
+        if let Some(config) = ctx.config.as_ref() {
+            if ctx.repo_root.join(&config.adr.registry).exists() {
+                let readiness = CanonicalPlanId::parse(&args.id).and_then(|id| {
+                    AdrService::new(&ctx.repo_root, config).require_planning_ready(&id.lineage_id())
+                });
+                if let Err(error) = readiness {
+                    return Ok(MineServer::tool_error(&error));
+                }
+            }
+        }
         let graph = GraphService::new(&ctx.store);
         let svc = PlanService::new(&graph);
         let req = PlanAddRequest {
@@ -348,13 +490,20 @@ impl MineServer {
                 started_at: now,
             }) {
                 Err(e) => MineServer::tool_error(&e),
-                Ok(saved) => CallToolResult::structured(json!({
-                    "command": "plan.start",
-                    "ok": true,
-                    "revision_before": expected,
-                    "revision_after": saved.revision,
-                    "data": { "plan": args.id },
-                })),
+                Ok(saved) => {
+                    let branch_anchor = saved
+                        .get(&args.id)
+                        .expect("started plan remains present")
+                        .branch_anchor
+                        .clone();
+                    CallToolResult::structured(json!({
+                        "command": "plan.start",
+                        "ok": true,
+                        "revision_before": expected,
+                        "revision_after": saved.revision,
+                        "data": { "plan": args.id, "branch_anchor": branch_anchor },
+                    }))
+                }
             },
         )
     }
@@ -444,7 +593,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_plan_reject",
-        description = "Reject a plan with a reason and compensating-plan id (REJECTED status). Mutates the graph under the lock, revision +1.",
+        description = "Reject an IN_PROGRESS or IMPLEMENTED plan with independent review evidence, a reason, and the next compensation id. Mutates the graph under the lock, revision +1.",
         annotations(read_only_hint = false)
     )]
     fn mine_plan_reject(
@@ -469,6 +618,7 @@ impl MineServer {
             match svc.reject(PlanRejectRequest {
                 id: args.id.clone(),
                 reason: args.reason,
+                review_report: args.review_report.clone().unwrap_or_default(),
                 compensating_plan: args.compensating_plan,
                 updated_at: now,
             }) {
@@ -478,7 +628,10 @@ impl MineServer {
                     "ok": true,
                     "revision_before": expected,
                     "revision_after": saved.revision,
-                    "data": { "plan": args.id },
+                    "data": {
+                        "plan": args.id,
+                        "review_report": args.review_report
+                    },
                 })),
             },
         )
@@ -498,6 +651,28 @@ impl MineServer {
 struct MinePlanShowArgs {
     /// The plan id to look up.
     id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MineGraphRepairProvenanceArgs {
+    /// Authoritative graph revision expected by the caller.
+    expected_revision: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MineAdrShowArgs {
+    /// ADR id such as ADR-0008.
+    id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MineDesignReadinessArgs {
+    /// Optional Design/Plan scope token.
+    #[serde(default)]
+    scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -553,6 +728,8 @@ struct MinePlanRejectArgs {
     id: String,
     /// The rejection reason.
     reason: String,
+    /// Canonical independent review report path.
+    review_report: Option<String>,
     /// The registered compensating plan id.
     compensating_plan: String,
 }

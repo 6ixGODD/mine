@@ -150,6 +150,8 @@ mod tests {
             id: id.to_string(),
             path: format!("docs/plan/{id}.md"),
             title: id.to_string(),
+            branch: String::new(),
+            branch_anchor: String::new(),
             status,
             hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
             soft_predecessors: soft.iter().map(|s| s.to_string()).collect(),
@@ -166,6 +168,8 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            lineage_id: String::new(),
+            worktree_path: String::new(),
         }
     }
 
@@ -177,7 +181,7 @@ mod tests {
 
     fn ws(plans: Vec<PlanNode>) -> PlanWorkspace {
         PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 5,
             project_id: "p".to_string(),
             workspace_id: "w".to_string(),

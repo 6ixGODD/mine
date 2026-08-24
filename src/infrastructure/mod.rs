@@ -7,6 +7,7 @@
 //! adapter. Later plans add the design index, repository locator, embedded
 //! skills, and the event log.
 
+pub mod adr_store;
 pub mod atomic_write;
 pub mod design_backup;
 pub mod embedded_skills;

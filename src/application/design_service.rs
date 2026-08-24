@@ -111,7 +111,7 @@ pub struct DesignStatus {
 mod tests {
     use super::*;
     use crate::domain::config::{
-        BranchesConfig, DesignConfig, GraphConfig, MineConfig, PlanConfig,
+        AdrConfig, BranchesConfig, DesignConfig, GraphConfig, MineConfig, PlanConfig,
     };
 
     fn cfg(repo_id: &str) -> MineConfig {
@@ -134,12 +134,15 @@ mod tests {
                 root: "docs/plan".to_string(),
                 ephemeral: true,
                 purge_before_stable_release: true,
+                worktrees_root: ".mine/worktrees".to_string(),
+                shared_environment_root: ".".to_string(),
             },
             graph: GraphConfig {
                 source: "docs/plan/execution-graph.toml".to_string(),
                 rendered: "docs/plan/execution-graph.md".to_string(),
                 lock_timeout_ms: 5000,
             },
+            adr: AdrConfig::default(),
         }
     }
 

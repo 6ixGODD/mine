@@ -69,6 +69,29 @@ pub enum MineError {
     #[error("plan not found: {plan_id}")]
     PlanNotFound { plan_id: String },
 
+    /// A Plan identity, path, or lineage does not follow the canonical
+    /// grammar. The legacy bootstrap node is handled only by the explicit
+    /// workspace migration gate.
+    #[error("invalid canonical Plan identity {value:?}: {detail}")]
+    InvalidPlanIdentity { value: String, detail: String },
+
+    /// An ADR registry entry was not found.
+    #[error("ADR not found: {adr_id}")]
+    AdrNotFound { adr_id: String },
+
+    /// The ADR registry is absent or cannot be used as a fact source.
+    #[error("ADR registry is not initialized at {path}: {detail}")]
+    AdrRegistryInvalid { path: PathBuf, detail: String },
+
+    /// An ADR body no longer matches the digest recorded for its proposal or
+    /// approval evidence.
+    #[error("ADR {adr_id} digest mismatch: expected {expected}, actual {actual}")]
+    AdrDigestMismatch {
+        adr_id: String,
+        expected: String,
+        actual: String,
+    },
+
     /// A requested state transition is not allowed by the state machine.
     #[error("invalid transition for plan {plan_id}: {from} -> {to}")]
     InvalidTransition {
@@ -199,6 +222,10 @@ impl MineError {
             Self::GraphInvalid { .. } => "MINE_GRAPH_INVALID",
             Self::GraphCycle { .. } => "MINE_GRAPH_CYCLE",
             Self::PlanNotFound { .. } => "MINE_PLAN_NOT_FOUND",
+            Self::InvalidPlanIdentity { .. } => "MINE_PLAN_ID_INVALID",
+            Self::AdrNotFound { .. } => "MINE_ADR_NOT_FOUND",
+            Self::AdrRegistryInvalid { .. } => "MINE_ADR_REGISTRY_INVALID",
+            Self::AdrDigestMismatch { .. } => "MINE_ADR_DIGEST_MISMATCH",
             Self::InvalidTransition { .. } => "MINE_INVALID_TRANSITION",
             Self::PredecessorNotAccepted { .. } => "MINE_PREDECESSOR_NOT_ACCEPTED",
             Self::WriteScopeConflict { .. } => "MINE_WRITE_SCOPE_CONFLICT",

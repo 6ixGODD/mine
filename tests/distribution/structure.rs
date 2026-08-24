@@ -102,9 +102,12 @@ fn mcp_registration_points_to_real_mine_mcp_serve() {
 
 #[test]
 fn plugin_versions_match_mine_version_source() {
-    // All plugin metadata must use the MINE version (0.1.0 from config), not a
-    // stale 0.0.0-dev placeholder.
-    let expected = "0.1.0";
+    // All plugin metadata must derive from the repository version source.
+    let config: toml::Value = toml::from_str(&read_str(&repo_root().join(".mine/config.toml")))
+        .expect("repository config parses");
+    let expected = config["mine_code_version"]
+        .as_str()
+        .expect("mine_code_version is a string");
     for p in [
         "plugins/mine/.claude-plugin/plugin.json",
         "plugins/mine/.codex-plugin/plugin.json",

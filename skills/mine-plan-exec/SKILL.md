@@ -1,7 +1,7 @@
 ---
 name: mine-plan-exec
-description: Execute one repository implementation plan end to end on the MINE-managed plan/<id>-<slug> branch. Use when the user invokes the host-specific mine-plan-exec skill with a plan file, asks to implement a plan created by mine-plan-create, or wants a governed plan execution with dependency checks, code changes, verification, acceptance reporting, commits, and execution-graph updates. Enter or create the plan branch from accepted dev per the standing Git authorization (AGENTS.md, branch-and-plan-lifecycle.md); never implement directly on stable or dev. Respect scheduler-supplied worktrees as authoritative.
-version: 0.1.9
+description: Execute one repository implementation plan end to end in its MINE-prepared linked worktree. Use when the user invokes mine-plan-exec with a plan ID or file, asks to implement a governed plan, or wants dependency checks, code changes, verification, reporting, commits, and graph updates. Never implement directly on stable or dev.
+version: 0.1.10
 ---
 
 # MINE Plan Execute
@@ -39,6 +39,10 @@ The accepted MCP tools `mine-plan-exec` may use:
 Operations `mine-plan-exec` needs that are intentionally **CLI-only** (no MCP
 tool exposes them):
 
+- `mine graph show --format json` - obtain the complete authoritative node
+  inventory for user-facing invocation resolution.
+- `mine plan prepare --id <exact-stored-id> --format json` - create or safely
+  reuse the registered linked worktree before start.
 - `mine plan release --id <id> --format json` - if a predecessor was just
   accepted and the target node is still `BLOCKED`, release is the gate into
   `READY`. There is no MCP tool for release; it is a CLI fallback. (Normally
@@ -50,16 +54,27 @@ the fallback explicitly.
 
 ## Resolve the requested plan
 
-1. Read the invocation argument as the plan path. Accept Claude Code forms such as:
+Accept exactly one `<plan-id-or-registered-path>`. Strip only an
+invocation-level `@`, then call `mine graph show --format json` from Root
+authority and match against the returned node IDs and registered paths.
 
-   ```text
-   mine-plan-exec docs/plan/02-card-and-observation-encoding.md
-   mine-plan-exec docs/plan/02-card-and-observation-encoding.md
-   ```
+For each graph node, the accepted inputs are:
 
-2. Strip only the invocation-level `@` marker and resolve the path relative to the repository root.
-3. Require exactly one existing Markdown plan. If no plan is supplied or the path is ambiguous, ask for the path before changing files.
-4. Never select a different plan merely because it appears ready in the execution graph.
+- its exact stored ID or exact registered path;
+- for a canonical stored ID beginning with `plan`, the ID with that prefix
+  removed or with that prefix replaced by one uppercase `P` (`planNN`, `NN`,
+  `PNN`; `planNN-CNN`, `NN-CNN`, `PNN-CNN`);
+- for the one legacy bootstrap node whose stored ID uses the `NN` placeholder,
+  accept `NN`, `PNN`, and `planNN`, all resolving to that exact stored ID.
+
+Collect matches by exact equality and require exactly one distinct graph node.
+Fail clearly on zero or multiple matches. Matching is case-sensitive. Never
+use prefix/substring matching, guess a filename, fill in a missing
+compensation ordinal, select the latest compensation, or pass shorthand to a
+binary command. Inputs such as `NN-C` do not mean `planNN-CNN`. After unique
+resolution, use only the exact stored ID for `mine plan show`, `mine plan
+prepare`, and every lifecycle command. Never select another node merely
+because it is READY.
 
 ## Load governance and evidence
 
@@ -98,21 +113,21 @@ architecture wrong, stop and request a compensating design/plan instead of impro
 ## Work in the assigned plan branch
 
 Plan implementation runs on the MINE-managed `plan/<id>-<slug>` branch,
-created from the accepted `dev` baseline - never directly on the stable
-branch or on `dev`. The repository owner's Skill invocation grants the
-standing Git authorization (root `AGENTS.md`, `docs/design/governance/
-branch-and-plan-lifecycle.md`) to create and switch the managed `dev` and
-`plan/*` branches.
+created or reused only by `mine plan prepare` - never directly on the stable
+branch or on `dev`. Call `mine plan show --id <exact-stored-id> --format json`,
+then `mine plan prepare --id <exact-stored-id> --format json`. Change the
+process directory to the returned absolute worktree path and verify its
+observed branch equals the registered branch before any write or `plan start`.
+A scheduler- or user-supplied worktree is authoritative only when the same
+prepare call reports that exact path and branch. A refusal blocks execution;
+never fall back to direct Git branch or worktree creation.
 
-- If the current branch/worktree is already the correct `plan/<id>-<slug>`
-  branch, work there.
-- If a scheduler or the user supplied an isolated worktree checked out at the
-  plan branch, treat it as authoritative: do not create a second worktree.
-- If the current checkout is `dev` (or the stable branch) and no plan branch
-  exists for this Plan, create `plan/<id>-<slug>` from the current accepted
-  `dev` HEAD and switch to it before editing. If a plan branch already exists
-  for this Plan (e.g. after a timeout), switch to it and continue the
-  existing diff rather than starting a second implementation.
+Use the returned authoritative Root for graph commands. Root remains on the
+integration branch and is never switched. Compensation nodes reuse the
+binary-reported lineage directory. For an `IN_PROGRESS` continuation,
+preparation is valid only when observed HEAD equals the registered branch tip
+and the persisted `branch_anchor` is an ancestor of that tip; current Root HEAD
+is never substituted as the anchor.
 - Never implement on stable or `dev` directly.
 - Never stash, reset, clean, restore, or checkout to discard existing
   changes; never force-push or rewrite shared history.
@@ -129,7 +144,7 @@ Before editing, inspect `git status --short`, the current branch, and staged cha
 Dirty status alone is not a blocker. Shared files are a blocker only when existing edits overlap the plan and cannot be preserved or
 integrated safely. Stage explicit paths only; never use `git add .` or `git add -A` in a dirty workspace.
 
-Before editing production files, read the current revision: call `mine_graph_status` (MCP) or `mine graph status --format json` (CLI fallback) (carry `data.revision` as `expected_revision`) and start the plan: call `mine_plan_start` (MCP) with `id`, `owner`, `run_id`; or `mine plan start --id <id> --owner <owner> --run-id <run> --format json` (CLI fallback). Proceed only after MINE returns `IN_PROGRESS` (exit 0). The accepted MINE CLI and MCP tools read the current revision under the lock themselves; they emit `revision_before`/`revision_after` in the envelope. Never edit either execution-graph file directly. For parallel lanes, MINE remains the serialized status owner and the plan's path ownership rules remain mandatory.
+Before editing production files, read the current revision: call `mine_graph_status` (MCP) or `mine graph status --format json` (CLI fallback) (carry `data.revision` as `expected_revision`) and start the plan: call `mine_plan_start` (MCP) with the exact stored `id`, `owner`, `run_id`; or `mine plan start --id <exact-stored-id> --owner <owner> --run-id <run> --format json` (CLI fallback). Proceed only after MINE returns `IN_PROGRESS` (exit 0) and the returned persisted `branch_anchor` equals the prepared worktree HEAD. The accepted MINE CLI and MCP tools read the current revision under the lock themselves; they emit `revision_before`/`revision_after` in the envelope. Never edit either execution-graph file directly. For parallel lanes, MINE remains the serialized status owner and the plan's path ownership rules remain mandatory.
 
 For a parallel lane, obey its exclusive write paths and read-only dependencies exactly. Do not edit reserved shared files, even to register
 an import, CLI command, dependency, or fixture; record those needs as integration requests for the final integration plan. Never run two
@@ -154,6 +169,13 @@ artifacts to the plan's ignored quarantine path over deleting them. Never use br
 
 Do not add compatibility aliases, migrations, or shims unless the plan or user explicitly requires them. Do not perform remote execution,
 uploads, submissions, deployments, or pushes unless the plan and user authorize that external mutation.
+
+If execution proves an immutable requirement infeasible, stop. Preserve and,
+when safe, commit a minimal reproduction; leave Root and the Plan worktree
+clean; report the exact evidence and keep the graph `IN_PROGRESS`. Never claim
+`IMPLEMENTED`, fabricate implementation evidence, edit the Plan, reject the
+Plan yourself, or create its compensation. Independent review owns the
+evidence-bound active rejection.
 
 ## Commit implementation safely
 
@@ -226,3 +248,19 @@ Report:
 - for non-parallel work, state that the work is already on the assigned branch with no hidden merge step; for a parallel lane, state the exact integration handoff and join artifact.
 
 Lead with the outcome. Do not claim the plan is accepted until the repository's reviewer has actually accepted it.
+
+## Shared toolchains and Plan-isolated mutable outputs
+
+Reuse Root-managed toolchains, dependency downloads, virtual environments, and
+only caches proven read-only or safely content-addressed. Do not create a
+second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
+cache directory in a linked Plan worktree.
+
+Mutable build, test, generation, coverage, packaging, and runner outputs must
+use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
+`CARGO_TARGET_DIR` to the exact Plan namespace, for example
+`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
+worktree-local `target`. If a measured output is predictably very large,
+record the estimate and pause for explicit owner agreement on serialization,
+a coarser exclusive namespace, and cleanup; never fall back automatically to a
+globally shared mutable directory.

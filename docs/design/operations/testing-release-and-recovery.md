@@ -14,6 +14,15 @@ cargo deny check            # when adopted
 
 Platform CI covers Windows, Linux, and macOS.
 
+Parallel or sequential Plan verification must attribute mutable outputs to the
+exact Plan node. Build products, test binaries, incremental state, coverage,
+code-generation intermediates, and packaging staging must not share a writable
+directory across Plans. Language adapters select Root-managed
+`.mine/build/<plan-id>/...` directories; a compensation node receives a fresh
+namespace even though it reuses the rejected lineage's Git worktree. When
+measured disk requirements make this infeasible, execution pauses for an
+owner-approved serialized or coarser exclusive strategy before any build runs.
+
 ## Test layers
 
 ### Unit and property tests
@@ -38,6 +47,19 @@ Platform CI covers Windows, Linux, and macOS.
 - Skill contracts against real CLI/MCP schemas;
 - installer idempotency and backup;
 - managed branch and release behavior.
+- linked Plan worktree creation, lookup, isolation, conflict recovery, and safe
+  cleanup with Root remaining on `dev`.
+- start-time `branch_anchor` capture for base and compensation nodes; Root graph
+  divergence followed by valid active/reviewable reuse; rewritten, stale,
+  detached, wrong-path/branch, and missing-anchor refusals.
+- graph v2-to-v3 provenance repair for recorded implementation chains and
+  active compensation ancestry, including ambiguous-base and missing-object
+  no-write refusals plus old-writer rejection of v3.
+- evidence-bound `IN_PROGRESS -> REJECTED`, canonical report and next sibling
+  enforcement, revision conflict, no fabricated implementation evidence, and
+  preserved unmerged lineage worktree.
+- ADR transition/digest/supersession/readiness behavior, concurrent registry
+  writers, deterministic decision-index rendering, and Plan admission refusal.
 
 ### Real-client smoke tests
 
@@ -80,7 +102,7 @@ The MINE source repository adds project-local gates enforced by `AGENTS.md` qual
 - root/generated Skill synchronization (`python scripts/sync-plugin-assets.py --check`);
 - embedded payload verification;
 - four-client installation smoke tests;
-- MCP discovery (exactly twelve tools);
+- MCP discovery (exactly seventeen tools);
 - bootstrap tests;
 - release artifact packaging and cross-platform CI.
 
@@ -107,3 +129,12 @@ The MINE source repository adds project-local gates enforced by `AGENTS.md` qual
 - render failure: retain TOML and rerun render;
 - failed workspace purge: leave files intact;
 - incomplete repository scan: keep explicit warnings and block full-release attestation.
+- infeasible immutable active Plan: freeze its write lane, preserve its clean
+  branch/worktree, approve the missing Design decision, accept a serialized
+  governance-recovery Plan when the current binary lacks the transition, then
+  reject the original through `mine plan reject` and resume only its next
+  sibling compensation in the preserved lineage worktree;
+- schema-v2 graph requiring branch anchors: record any recovery Plan's ordered
+  implementation commits through the v2 lifecycle first, then run the sole
+  revision-checked `mine graph repair-provenance` migration. Ambiguous evidence
+  blocks migration; no manual TOML repair or reflog guess is permitted.

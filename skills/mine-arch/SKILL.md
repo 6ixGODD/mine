@@ -1,7 +1,7 @@
 ---
 name: mine-arch
 description: Create or overhaul a repository's modular architecture source of truth rooted at docs/design/index.md and initialize the repository's engineering governance. Use for new projects, weak or stale architecture, major boundary changes, or repository setup. Inspects real code and requirements, performs mandatory official-documentation research, designs abstract architecture before detailed design, applies SOLID without speculative abstraction, creates or repairs language-specific formatter/linter/type/test/CI configuration, establishes durable AGENTS.md rules, and validates the resulting quality gates.
-version: 0.1.9
+version: 0.1.10
 ---
 
 # MINE Architecture
@@ -68,6 +68,10 @@ The accepted MCP tools `mine-arch` may use:
 - `mine_design_validate` (no arguments) - validate the design namespace.
 - `mine_graph_validate` (no arguments) - validate the execution graph.
 - `mine_graph_status` (no arguments) - read revision, branches, plan count.
+- `mine_plan_reject` (`id`, `reason`, `review_report`,
+  `compensating_plan`) - only for the bounded, evidence-backed rejection of
+  an objectively infeasible `IN_PROGRESS` Plan after the replacement ADR is
+  approved.
 
 Operations `mine-arch` needs that are intentionally **CLI-only** (no MCP tool
 exposes them, because they initialize local environment or are one-shot
@@ -80,6 +84,34 @@ setup):
 
 When a required operation has no MCP tool, fall back to the JSON CLI and
 state the fallback explicitly.
+
+### ADR-first approval gate
+
+Before detailed Design is treated as planning-ready, extract each material
+decision into a bounded DRAFT ADR. Use the CLI to propose it, show the exact
+body and digest, and stop for the repository owner's explicit approval:
+
+```text
+mine adr add ...
+mine adr propose --id <adr-id>
+mine adr show --id <adr-id>
+mine adr approve --id <adr-id> --by <actor> --note <approval-note>
+mine design readiness --scope <scope>
+```
+
+`mine-arch` must never approve its own ADRs, infer batch approval, or continue
+planning when an applicable planning-blocking ADR is unresolved. After the
+owner has approved the material decisions, complete the detailed Design and
+run scoped readiness. The registry digest binds approval to the exact ADR
+body bytes, so body edits require a fresh proposal and approval.
+
+If architecture discovery proves an immutable `IN_PROGRESS` Plan infeasible,
+preserve that Plan and its lineage. After the replacement decision completes
+the ADR lifecycle and an independent reviewer writes the canonical Root-visible review report, `mine-arch` may invoke the evidence-bound rejection
+with that report, a non-empty reason, and the next canonical sibling
+compensation ID. It never fabricates implementation evidence, performs a
+generic status change, rewires arbitrary successors, or resumes the stopped
+implementation.
 
 ## MINE execution-graph integration
 
@@ -109,10 +141,11 @@ blocked and provide the repository installation command.
 - create plans, implementation reports, or execution-graph nodes;
 - create, switch, or delete Git branches or worktrees;
 - create commits, pushes, merges, or releases;
-- run `mine` write commands that transition execution-graph state;
+- run `mine` write commands that transition execution-graph state, except the
+  bounded active rejection described above;
 - modify business code to match a target design (that is `mine-plan-exec`'s role, through a plan).
 
-It writes only to MINE-owned design, repository governance (`AGENTS.md`), quality-gate configuration, and the design ownership marker. It may run `mine init` to establish graph governance and validate the resulting configuration. Handoff to `mine-plan-create` is an explicit user action, not an automatic next step.
+It writes only to MINE-owned design, repository governance (`AGENTS.md`), quality-gate configuration, and the design ownership marker. It may run `mine init` to establish graph governance and validate the resulting configuration. The sole later graph-transition exception is the approved, independently evidenced active-Plan rejection described above. Handoff to `mine-plan-create` is an explicit user action, not an automatic next step.
 
 ## Non-negotiable principles
 
@@ -449,3 +482,19 @@ Finish with:
 - `AGENTS.md` agreements added or changed;
 - unresolved material decisions and external gates;
 - the next recommended `mine-plan-create` target.
+
+## Shared toolchains and Plan-isolated mutable outputs
+
+Reuse Root-managed toolchains, dependency downloads, virtual environments, and
+only caches proven read-only or safely content-addressed. Do not create a
+second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
+cache directory in a linked Plan worktree.
+
+Mutable build, test, generation, coverage, packaging, and runner outputs must
+use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
+`CARGO_TARGET_DIR` to the exact Plan namespace, for example
+`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
+worktree-local `target`. If a measured output is predictably very large,
+record the estimate and pause for explicit owner agreement on serialization,
+a coarser exclusive namespace, and cleanup; never fall back automatically to a
+globally shared mutable directory.

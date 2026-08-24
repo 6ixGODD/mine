@@ -1,0 +1,189 @@
+schema_version = 1
+revision = 7
+
+[[adrs]]
+id = "ADR-0001"
+path = "docs/design/decisions/0001-toml-execution-graph.md"
+title = "Use TOML as the Execution-Graph Fact Source"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "F9F6B4E3E3CE8805F1374BDC6EEDA1DB8BACBEFA81F45EF01B89DB4661D83315"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0002"
+path = "docs/design/decisions/0002-ephemeral-plan-workspace.md"
+title = "Treat Planning Artifacts as Ephemeral"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "ADACE421CFCBE6359743BF44E271EF03CBC697E79161CA05A31B3BC9E699F293"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0003"
+path = "docs/design/decisions/0003-english-design-documentation.md"
+title = "Write the Design Knowledge Base in English"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0B2274E0F5564B033246AF71567B03EC927C61DD224328EFA441FE38BCEE5F74"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0004"
+path = "docs/design/decisions/0004-five-first-class-skills.md"
+title = "Maintain Five First-Class Skills"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "47B0CDAA7E698C533A60F4D7BB8790948FFF8552B48A4D41991AC303FE606938"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0005"
+path = "docs/design/decisions/0005-code-authority-during-mine-sync.md"
+title = "Code Is the Default Authority During `mine-sync`"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "4853D164AC78D8A12BF37D33C389EA27A3BCA746885A9E4EA409AF8598D95C77"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0006"
+path = "docs/design/decisions/0006-mine-owns-design-namespace.md"
+title = "MINE Owns `docs/design/`"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "EE2BF5A2ED748CAD704A9FBCFB5D6A45C8C106B84A5BE3CB4F77D8C7F75F8F54"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0007"
+path = "docs/design/decisions/0007-canonical-plan-lineage-and-compensation-worktree.md"
+title = "Canonical Plan Lineage and Compensation Worktree Reuse"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "3CE51AA6BF67CAB3771D55EF3E88401EEA273DCFD0B4D7C56FB550F44316248E"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `65D048B8AEA7802973C844B1730A076C626C2CE08603C3BC86EB8A8E4A5F574B`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0008"
+path = "docs/design/decisions/0008-human-approved-adr-lifecycle.md"
+title = "Human-Approved ADR Lifecycle Before Planning"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0224D8A55061528B722D15514D29370CA56338B21F0222AE6A2E136652F503F5"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `3A32178468650BFF2265F40D676B1AA2F87CB0AD4314D07D2C97A0F54ECBB2A0`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0009"
+path = "docs/design/decisions/0009-project-specific-detailed-design-readiness.md"
+title = "Keep Detailed-Design Coverage Project-Specific"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0CD39388215D8044C361DF41A3301DF26F547E410CC722CC03ACF2D37A00FF27"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `AB207439B386F5CD041230E94C7817AF3B2301532E2825BE4A8E19DA4644726F`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0010"
+path = "docs/design/decisions/0010-persist-plan-branch-anchor-at-start.md"
+title = "Persist the Plan Branch Anchor at Start"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["docs/design/execution-graph", "docs/design/governance", "docs/design/interfaces"]
+content_sha256 = "147A096D56803BAFF5863358B76A19FA35DAB642B5AA2AF76266762739B83C83"
+proposed_at = "2026-08-23T20:21:19.2248165Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-23T20:38:07.0613862Z"
+approval_note = "Repository owner replied “批准” to approve ADR-0010 and ADR-0011 in the current review turn."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-23T20:38:07.0613862Z"
+
+[[adrs]]
+id = "ADR-0011"
+path = "docs/design/decisions/0011-reject-infeasible-in-progress-plans.md"
+title = "Reject Infeasible In-Progress Plans Without Faking Implementation"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["docs/design/execution-graph", "docs/design/governance", "docs/design/interfaces", "docs/design/integrations"]
+content_sha256 = "9FF2E68836C8E95FC2728B83B3D54EA4711C8EED3B9396C557BB8B8590565C17"
+proposed_at = "2026-08-23T20:21:19.6038847Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-23T20:38:07.2970005Z"
+approval_note = "Repository owner replied “批准” to approve ADR-0010 and ADR-0011 in the current review turn."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-23T20:38:07.2970005Z"

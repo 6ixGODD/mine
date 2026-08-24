@@ -7,7 +7,8 @@
 //! - human lines for the default mode; JSON envelope (deterministic, sorted
 //!   keys) for `--format json`;
 //! - stable `MINE_*` error codes and the public exit-code mapping;
-//! - revision + optimistic-concurrency via [`TomlStore::save_with_revision`]
+//! - revision + optimistic-concurrency via
+//!   [`crate::infrastructure::toml_store::TomlStore::save_with_revision`]
 //!   (lock → reload → recheck → mutate → atomic write → render);
 //! - deterministic Markdown rendering via [`crate::render`];
 //! - read-only Git evidence via [`crate::infrastructure::git`];
@@ -18,6 +19,7 @@ use serde_json::{Value, json};
 
 use crate::agent_setup::install::FailPhase;
 use crate::agent_setup::targets::Env;
+use crate::application::adr_service::{AdrAddRequest, AdrService};
 use crate::application::agent_service;
 use crate::application::design_service::DesignService;
 use crate::application::graph_service::{
@@ -32,6 +34,7 @@ use crate::cli::context::{CommandContext, build_context, load_config_or_error};
 use crate::cli::{HandlerError, envelope_for};
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::{PlanNode, PlanWorkspace};
+use crate::domain::plan_id::CanonicalPlanId;
 use crate::domain::ports::Clock;
 use crate::domain::validation;
 use crate::infrastructure::design_backup::DesignBackup;
@@ -67,6 +70,7 @@ pub fn handle(
         "graph" => match sub {
             "validate" => graph_validate(parsed, rest),
             "render" => graph_render(parsed, rest),
+            "repair-provenance" => graph_repair_provenance(parsed, rest),
             "status" => graph_status(parsed, rest),
             "ready" => graph_ready(parsed, rest),
             "wave" => graph_wave(parsed, rest),
@@ -78,6 +82,7 @@ pub fn handle(
         "plan" => match sub {
             "add" => plan_add(parsed, rest),
             "show" => plan_show(parsed, rest),
+            "prepare" => plan_prepare(parsed, rest),
             "start" => plan_start(parsed, rest),
             "implemented" => plan_implemented(parsed, rest),
             "accept" => plan_accept(parsed, rest),
@@ -92,8 +97,22 @@ pub fn handle(
             "backup" => design_backup(parsed, rest),
             "validate" => design_validate(parsed, rest),
             "status" => design_status(parsed, rest),
+            "readiness" => design_readiness(parsed, rest),
             _ => Err(HandlerError::usage(format!(
                 "unknown design subcommand {sub:?}"
+            ))),
+        },
+        "adr" => match sub {
+            "add" => adr_add(parsed, rest),
+            "show" => adr_show(parsed, rest),
+            "list" => adr_list(parsed, rest),
+            "propose" => adr_propose(parsed, rest),
+            "approve" => adr_approve(parsed, rest),
+            "reject" => adr_reject(parsed, rest),
+            "supersede" => adr_supersede(parsed, rest),
+            "validate" => adr_validate(parsed, rest),
+            _ => Err(HandlerError::usage(format!(
+                "unknown adr subcommand {sub:?}"
             ))),
         },
         "agent" => match sub {
@@ -211,11 +230,11 @@ fn ctx_err(e: MineError) -> HandlerError {
 /// stderr only. The CLI dispatcher never reaches `render` for this command, so
 /// no human/JSON CLI envelope contaminates protocol stdout.
 fn mcp_serve(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
-    let repo_root =
-        crate::cli::context::resolve_repo_root(parsed.global.repo.as_deref()).map_err(ctx_err)?;
+    let (repo_root, caller_root) =
+        crate::cli::context::resolve_repo_roots(parsed.global.repo.as_deref()).map_err(ctx_err)?;
     // The rmcp-backed server runs its own stdio transport and only returns on
     // EOF/shutdown; on error, surface a HandlerError (routed to stderr).
-    crate::mcp::serve(&repo_root).map_err(|e| HandlerError {
+    crate::mcp::serve(&caller_root).map_err(|e| HandlerError {
         code: "MINE_INTERNAL",
         message: e.to_string(),
         exit_code: crate::output::exit_code::EXTERNAL,
@@ -644,6 +663,37 @@ fn graph_render(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerRes
     Ok((env, lines))
 }
 
+fn graph_repair_provenance(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _pos) = parse_flags(rest);
+    let expected_revision = flag(&flags, "expected-revision")
+        .ok_or_else(|| HandlerError::usage("graph repair-provenance requires --expected-revision"))?
+        .parse::<u64>()
+        .map_err(|_| HandlerError::usage("--expected-revision must be an unsigned integer"))?;
+    let svc = GraphService::new(&ctx.store);
+    let outcome = svc.repair_provenance(expected_revision).map_err(ctx_err)?;
+    let env = envelope_for("graph.repair-provenance", Some(&ctx.repo_root))
+        .with_workspace_id(outcome.workspace.workspace_id.clone())
+        .with_revision(outcome.revision_before, outcome.revision_after)
+        .with_data(json!({
+            "changed": outcome.changed,
+            "repaired_plans": outcome.repaired_plans,
+            "schema_version": outcome.workspace.schema_version,
+        }));
+    let lines = vec![
+        HumanLine::Section("mine graph repair-provenance".to_string()),
+        HumanLine::Field {
+            key: "  revision".to_string(),
+            value: format!("{} -> {}", outcome.revision_before, outcome.revision_after),
+        },
+        HumanLine::Field {
+            key: "  changed".to_string(),
+            value: outcome.changed.to_string(),
+        },
+    ];
+    Ok((env, lines))
+}
+
 fn graph_status(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
     let ctx = build_context(&parsed.global).map_err(ctx_err)?;
     let svc = GraphService::new(&ctx.store);
@@ -721,6 +771,10 @@ fn node_json(p: &PlanNode) -> Value {
         "path": p.path,
         "title": p.title,
         "status": p.status.as_str(),
+        "branch": p.branch,
+        "branch_anchor": p.branch_anchor,
+        "lineage_id": p.lineage_id,
+        "worktree_path": p.worktree_path,
         "hard_predecessors": p.hard_predecessors,
         "owner": p.owner,
         "run_id": p.run_id,
@@ -762,6 +816,17 @@ fn regex_lite_rev(md: &str) -> Option<u64> {
 // plan (mutations via save_with_revision)
 // ----------------------------------------------------------------------------
 
+fn require_plan_readiness(ctx: &CommandContext, id: &str) -> MineResult<()> {
+    let Some(config) = ctx.config.as_ref() else {
+        return Ok(());
+    };
+    if !ctx.repo_root.join(&config.adr.registry).exists() {
+        return Ok(());
+    }
+    let lineage = CanonicalPlanId::parse(id)?.lineage_id();
+    AdrService::new(&ctx.repo_root, config).require_planning_ready(&lineage)
+}
+
 fn plan_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
     let ctx = build_context(&parsed.global).map_err(ctx_err)?;
     let (flags, _pos) = parse_flags(rest);
@@ -793,6 +858,7 @@ fn plan_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
         .iter()
         .map(|s| s.to_string())
         .collect();
+    require_plan_readiness(&ctx, &id).map_err(ctx_err)?;
 
     // Route through the shared PlanService (same path the MCP tool uses).
     let graph = GraphService::new(&ctx.store);
@@ -826,11 +892,15 @@ fn plan_show(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult 
     let id = flag(&flags, "id").ok_or_else(|| HandlerError::usage("plan show requires --id"))?;
     let graph = GraphService::new(&ctx.store);
     let svc = PlanService::new(&graph);
-    let (revision, node) = svc.show(id).map_err(ctx_err)?;
+    let lookup = svc
+        .show_with_locations(id, &ctx.caller_root)
+        .map_err(ctx_err)?;
+    let revision = lookup.authoritative_revision;
+    let node = &lookup.node;
     let env = envelope_for("plan.show", Some(&ctx.repo_root))
         .with_workspace_id(graph.validate().map_err(ctx_err)?.workspace_id.clone())
         .with_revision(revision, revision)
-        .with_data(json!({"plan": node_json(&node)}));
+        .with_data(json!({"plan": lookup}));
     let lines = vec![
         HumanLine::Field {
             key: "  id".to_string(),
@@ -849,6 +919,27 @@ fn plan_show(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult 
             value: node.hard_predecessors.join(", "),
         },
     ];
+    Ok((env, lines))
+}
+
+fn plan_prepare(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _pos) = parse_flags(rest);
+    let id = flag(&flags, "id").ok_or_else(|| HandlerError::usage("plan prepare requires --id"))?;
+    let graph = GraphService::new(&ctx.store);
+    let prepared = PlanService::new(&graph)
+        .prepare(id, &ctx.caller_root)
+        .map_err(ctx_err)?;
+    let revision = prepared.lookup.authoritative_revision;
+    let workspace_id = graph.validate().map_err(ctx_err)?.workspace_id.clone();
+    let env = envelope_for("plan.prepare", Some(&ctx.repo_root))
+        .with_workspace_id(workspace_id)
+        .with_revision(revision, revision)
+        .with_data(json!({"plan": prepared}));
+    let lines = vec![HumanLine::Field {
+        key: "  prepared".to_string(),
+        value: format!("{} ({})", id, prepared.action),
+    }];
     Ok((env, lines))
 }
 
@@ -872,10 +963,15 @@ fn plan_start(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult
             started_at: now,
         })
         .map_err(|e| map_partial(ctx_err(e), &ctx))?;
+    let branch_anchor = saved
+        .get(&id)
+        .expect("started plan remains present")
+        .branch_anchor
+        .clone();
     let env = envelope_for("plan.start", Some(&ctx.repo_root))
         .with_workspace_id(saved.workspace_id.clone())
         .with_revision(expected, saved.revision)
-        .with_data(json!({"plan": id}));
+        .with_data(json!({"plan": id, "branch_anchor": branch_anchor}));
     let lines = vec![HumanLine::Field {
         key: "  started".to_string(),
         value: id,
@@ -967,6 +1063,9 @@ fn plan_reject(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResul
     let reason = flag(&flags, "reason")
         .ok_or_else(|| HandlerError::usage("plan reject requires --reason"))?
         .to_string();
+    let review_report = flag(&flags, "review-report")
+        .ok_or_else(|| HandlerError::usage("plan reject requires --review-report"))?
+        .to_string();
     let compensating = flag(&flags, "compensating-plan").unwrap_or("").to_string();
     if compensating.is_empty() {
         return Err(HandlerError::usage(
@@ -981,6 +1080,7 @@ fn plan_reject(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResul
         .reject(PlanRejectRequest {
             id: id.clone(),
             reason,
+            review_report: review_report.clone(),
             compensating_plan: compensating.clone(),
             updated_at: now,
         })
@@ -988,7 +1088,11 @@ fn plan_reject(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResul
     let env = envelope_for("plan.reject", Some(&ctx.repo_root))
         .with_workspace_id(saved.workspace_id.clone())
         .with_revision(expected, saved.revision)
-        .with_data(json!({"plan": id, "compensating_plan": compensating}));
+        .with_data(json!({
+            "plan": id,
+            "review_report": review_report,
+            "compensating_plan": compensating
+        }));
     let lines = vec![HumanLine::Field {
         key: "  rejected".to_string(),
         value: id,
@@ -1005,6 +1109,7 @@ fn plan_release(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResu
     let id = flag(&flags, "id")
         .ok_or_else(|| HandlerError::usage("plan release requires --id"))?
         .to_string();
+    require_plan_readiness(&ctx, &id).map_err(ctx_err)?;
     let now = SystemClock.now_utc_rfc3339();
     let graph = GraphService::new(&ctx.store);
     let svc = PlanService::new(&graph);
@@ -1079,6 +1184,209 @@ fn plan_rewire_compensation(parsed: &crate::cli::ParsedArgs, rest: &[String]) ->
 // ----------------------------------------------------------------------------
 // design
 // ----------------------------------------------------------------------------
+
+fn adr_service_for<'a>(ctx: &'a CommandContext) -> MineResult<AdrService<'a>> {
+    let config = ctx
+        .config
+        .as_ref()
+        .ok_or_else(|| MineError::RepositoryNotFound {
+            detail: "no .mine/config.toml (run `mine init`)".to_string(),
+        })?;
+    Ok(AdrService::new(&ctx.repo_root, config))
+}
+
+fn adr_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("adr add requires --id"))?
+        .to_string();
+    let path = flag(&flags, "path")
+        .ok_or_else(|| HandlerError::usage("adr add requires --path"))?
+        .to_string();
+    let title = flag(&flags, "title")
+        .ok_or_else(|| HandlerError::usage("adr add requires --title"))?
+        .to_string();
+    let planning_blocking = flag(&flags, "planning-blocking")
+        .map(|v| v != "false")
+        .unwrap_or(true);
+    let scopes = flags_all(&flags, "scope")
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let saved = service
+        .add(AdrAddRequest {
+            id: id.clone(),
+            path,
+            title,
+            planning_blocking,
+            planning_scopes: scopes,
+        })
+        .map_err(ctx_err)?;
+    let env =
+        envelope_for("adr.add", Some(&ctx.repo_root)).with_data(json!({"adr": saved.get(&id)}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  added".to_string(),
+            value: id,
+        }],
+    ))
+}
+
+fn adr_show(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id").ok_or_else(|| HandlerError::usage("adr show requires --id"))?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let entry = service.show(id).map_err(ctx_err)?;
+    let env = envelope_for("adr.show", Some(&ctx.repo_root)).with_data(json!({"adr": entry}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  status".to_string(),
+            value: format!("{} {}", entry.id, entry.status.as_str()),
+        }],
+    ))
+}
+
+fn adr_list(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let entries = service.list().map_err(ctx_err)?;
+    let lines = entries
+        .iter()
+        .map(|entry| HumanLine::Field {
+            key: format!("  {}", entry.id),
+            value: format!("{} ({})", entry.title, entry.status.as_str()),
+        })
+        .collect();
+    let env = envelope_for("adr.list", Some(&ctx.repo_root)).with_data(json!({"adrs": entries}));
+    Ok((env, lines))
+}
+
+fn adr_propose(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("adr propose requires --id"))?
+        .to_string();
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let saved = service
+        .propose(&id, &SystemClock.now_utc_rfc3339())
+        .map_err(ctx_err)?;
+    let env =
+        envelope_for("adr.propose", Some(&ctx.repo_root)).with_data(json!({"adr": saved.get(&id)}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  proposed".to_string(),
+            value: id,
+        }],
+    ))
+}
+
+fn adr_approve(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("adr approve requires --id"))?
+        .to_string();
+    let by = flag(&flags, "by").ok_or_else(|| HandlerError::usage("adr approve requires --by"))?;
+    let note =
+        flag(&flags, "note").ok_or_else(|| HandlerError::usage("adr approve requires --note"))?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let saved = service
+        .approve(&id, by, note, &SystemClock.now_utc_rfc3339())
+        .map_err(ctx_err)?;
+    let env =
+        envelope_for("adr.approve", Some(&ctx.repo_root)).with_data(json!({"adr": saved.get(&id)}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  approved".to_string(),
+            value: id,
+        }],
+    ))
+}
+
+fn adr_reject(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("adr reject requires --id"))?
+        .to_string();
+    let reason = flag(&flags, "reason")
+        .ok_or_else(|| HandlerError::usage("adr reject requires --reason"))?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let saved = service
+        .reject(&id, reason, &SystemClock.now_utc_rfc3339())
+        .map_err(ctx_err)?;
+    let env =
+        envelope_for("adr.reject", Some(&ctx.repo_root)).with_data(json!({"adr": saved.get(&id)}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  rejected".to_string(),
+            value: id,
+        }],
+    ))
+}
+
+fn adr_supersede(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("adr supersede requires --id"))?
+        .to_string();
+    let replacement = flag(&flags, "replacement")
+        .ok_or_else(|| HandlerError::usage("adr supersede requires --replacement"))?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let saved = service
+        .supersede(&id, replacement, &SystemClock.now_utc_rfc3339())
+        .map_err(ctx_err)?;
+    let env = envelope_for("adr.supersede", Some(&ctx.repo_root))
+        .with_data(json!({"adr": saved.get(&id), "replacement": saved.get(replacement)}));
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  superseded".to_string(),
+            value: format!("{id} -> {replacement}"),
+        }],
+    ))
+}
+
+fn adr_validate(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let registry = service.validate().map_err(ctx_err)?;
+    let env = envelope_for("adr.validate", Some(&ctx.repo_root)).with_data(
+        json!({"valid": true, "revision": registry.revision, "count": registry.entries.len()}),
+    );
+    Ok((
+        env,
+        vec![HumanLine::Field {
+            key: "  valid".to_string(),
+            value: format!("{} ADRs", registry.entries.len()),
+        }],
+    ))
+}
+
+fn design_readiness(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _) = parse_flags(rest);
+    let scope = flag(&flags, "scope");
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let readiness = service.readiness(scope).map_err(ctx_err)?;
+    let lines = vec![HumanLine::Field {
+        key: "  ready".to_string(),
+        value: readiness.ready.to_string(),
+    }];
+    let env = envelope_for("design.readiness", Some(&ctx.repo_root))
+        .with_data(serde_json::to_value(&readiness).unwrap_or(Value::Null));
+    Ok((env, lines))
+}
 
 fn design_backup(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
     let ctx = build_context(&parsed.global).map_err(ctx_err)?;

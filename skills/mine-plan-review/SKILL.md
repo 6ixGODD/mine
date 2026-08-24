@@ -1,7 +1,7 @@
 ---
 name: mine-plan-review
 description: Strictly review one implemented repository plan against AGENTS.md, architecture, the immutable plan, implementation commits, real runtime behavior, verification evidence, and downstream contracts. Use when the user invokes the host-specific mine-plan-review skill with a plan path, asks whether a plan can be accepted, requests an acceptance review, or wants review failures classified into direct small fixes versus a new compensating plan. Work in the current workspace; never trust an implementation report or green tests without independent evidence.
-version: 0.1.9
+version: 0.1.10
 ---
 
 # MINE Plan Review
@@ -30,8 +30,9 @@ The accepted MCP tools `mine-plan-review` may use:
 - `mine_plan_show` (`id`) - read the target node, its predecessors, and status.
 - `mine_plan_accept` (`id`, `review`) - transition `IMPLEMENTED` -> `ACCEPTED`
   and record the review report path.
-- `mine_plan_reject` (`id`, `reason`, `compensating_plan`) - transition
-  `IMPLEMENTED` -> `REJECTED` and register the compensating plan id.
+- `mine_plan_reject` (`id`, `reason`, `review_report`,
+  `compensating_plan`) - evidence-bound transition from `IMPLEMENTED` or an
+  objectively infeasible `IN_PROGRESS` Plan to `REJECTED`.
 - `mine_graph_validate` (no arguments) - validate the graph after transitions.
 - `mine_design_validate` (no arguments) - confirm design references.
 
@@ -39,6 +40,10 @@ Operations `mine-plan-review` needs that are intentionally **CLI-only** (no
 MCP tool exposes them, because they rewire downstream dependencies outside
 the single-node accept/reject path):
 
+- `mine graph show --format json` - obtain the complete authoritative node
+  inventory for user-facing invocation resolution.
+- `mine plan prepare --id <exact-stored-id> --format json` - safely enter the
+  registered review worktree.
 - `mine plan rewire-compensation --id <rejected-plan-id> --format json` -
   reroute downstream dependencies from a rejected plan onto its registered
   compensating plan. There is **no MCP tool for rewiring**; after
@@ -54,13 +59,20 @@ the fallback explicitly.
 
 ### Plan-review mode (default)
 
-Treat the invocation argument as exactly one immutable plan path:
+Accept exactly one `<plan-id-or-registered-path>`. Strip only an
+invocation-level `@`, call `mine graph show --format json` from Root authority,
+and match by exact equality against each returned exact stored ID and exact registered path.
+For canonical IDs, accept the exact ID, its removed-`plan` form, or the form
+with one uppercase `P`: `planNN` / `NN` / `PNN` and `planNN-CNN` / `NN-CNN` /
+`PNN-CNN`. For the legacy bootstrap stored ID represented by `NN`, accept
+`NN`, `PNN`, and `planNN`, all resolving to that exact stored ID.
 
-```text
-mine-plan-review docs/plan/02-card-and-observation-encoding.md
-```
-
-Strip only the invocation-level `@`, resolve from repository root, and require the file to exist. Do not silently review another plan. If no path is supplied, ask for it before mutation.
+Require exactly one distinct graph-node match and use only that exact stored
+ID for `mine plan show`, `mine plan prepare`, and all lifecycle commands. Fail
+clearly on no match or ambiguity. Matching is case-sensitive; never use
+prefix/substring matching, guess a filename, fill a missing compensation
+ordinal, select the latest compensation, or pass shorthand to the binary.
+`NN-C` never means `planNN-CNN`. If no target is supplied, ask before mutation.
 
 ### Release-closure mode
 
@@ -94,10 +106,18 @@ test names and the implementation report as claims to verify, not authority.
 
 ## Establish a clean review subject
 
+Resolve the node with `mine plan show --id <exact-stored-id> --format json`,
+call `mine plan prepare --id <exact-stored-id> --format json`, enter the
+returned absolute path, and verify its observed branch and HEAD. For an active
+or implemented node, the persisted `branch_anchor` must be an ancestor of the
+exact registered branch tip. Use the returned authoritative Root for graph
+operations and never switch Root. A scheduler-supplied worktree must match the
+same prepare evidence; refusal blocks review without a direct Git fallback.
+
 Review the committed implementation named by its report. Inspect current branch, worktree list, `git status`, staged state and concurrent
 changes before running commands.
 
-- Work in the current workspace; do not create a worktree or branch.
+- Work in the prepared workspace; do not directly create a worktree or branch.
 - Never stash, reset, clean, checkout, restore or discard user/agent changes.
 - Separate target-plan changes from unrelated concurrent changes using commit diffs and blobs.
 - Do not attribute an unrelated dirty-worktree failure to the reviewed plan.
@@ -220,10 +240,28 @@ Accept only when every hard acceptance item is `PASS` (after any direct reviewer
 Then:
 
 1. Create a separate review report under `docs/plan/reports/<plan-name>-review.md` rather than overwriting implementation evidence. Include any reviewer-authored fixes: what changed, why, and its revalidation evidence.
-2. Record inspected commits, traceability matrix, independent commands/results, reviewer fixes and remaining non-blocking risks.
-3. Call `mine plan accept --id <id> --review <review report path> --format json` (MCP: `mine_plan_accept` with `id` and `review`); the accepted MINE CLI and MCP tool read the current revision under the lock, transitions `IMPLEMENTED`→`ACCEPTED`, records the review report, and (when combined with the released status) releases eligible downstream `BLOCKED`→`READY` successors whose hard predecessors are all now accepted. The envelope reports `revision_before`/`revision_after`.
-4. Stage explicit review and reviewer-fix files only and commit with `docs: accept Plan NN ...` (reviewer-fix commits use their own `fix:`/`chore:` subject, kept separate from this bookkeeping commit).
-5. Verify the commit and state that no worktree merge is required.
+2. Record inspected commits, traceability matrix, independent commands/results, reviewer fixes and remaining non-blocking risks. Commit reviewer fixes separately, then commit the review report on the Plan branch; stage explicit paths only.
+3. Require a clean Root `dev` and clean prepared Plan worktree, validate the registered branch/anchor/ancestry again, merge the Plan branch into Root `dev` with `--no-ff`, and rerun every required integration gate on the merged tree. A failed merge or gate leaves the node `IMPLEMENTED`, not accepted.
+4. After the merge and integration gates succeed, remove only the exact clean registered linked worktree and delete only the now-merged local Plan branch. Never force removal or delete a rejected, dirty, checked-out, or unexpectedly unmerged branch.
+5. Call `mine plan accept --id <exact-stored-id> --review <review report path> --format json` (MCP: `mine_plan_accept` with exact stored `id` and `review`). The accepted binary transitions `IMPLEMENTED`→`ACCEPTED`, records the review report, and releases eligible downstream nodes. Commit only the Root-owned graph result with explicit paths and verify the reported revisions.
+
+## Review an infeasible active Plan
+
+Enter this mode only when the owner explicitly asks for review of a stopped
+`IN_PROGRESS` Plan whose executor reported objective immutable-Plan
+infeasibility. Independently reproduce the failure against the preserved
+branch/worktree and prove that the persisted anchor and Git topology are not
+being confused with ordinary implementation drift.
+
+If a material replacement decision is required, its ADR must already be
+approved. Write and commit the canonical Root-visible
+`docs/plan/reports/<plan-name>-review.md` as a regular file contained by Root;
+record the immutable requirement, independent reproduction, reason, authority,
+and next contiguous sibling compensation ID. Then call `mine plan reject` with
+the exact stored ID, non-empty reason, exact `--review-report` path, and exact
+next compensation ID. This transition records no implementation report or
+implementation commits. Do not merge the rejected branch, remove its lineage
+worktree, or start/register the compensation implicitly.
 
 ## Bring release closure to completion
 
@@ -273,15 +311,15 @@ Never invent Cargo, Python, Node, Go, or any other toolchain command. Commands v
 For a material failure:
 
 1. Do not edit the immutable target plan or rewrite its implementation report/history.
-2. Create `docs/plan/reports/<plan-name>-review.md` with `REJECTED`, exact findings, commands, evidence and affected downstream nodes.
-3. Call `mine plan reject --id <id> --reason <rejection summary> --compensating-plan <comp-id> --format json` (MCP: `mine_plan_reject` with `id`, `reason`, `compensating_plan`); the accepted MINE CLI and MCP tool transition `IMPLEMENTED`→`REJECTED`, records the `rejection_reason` and `compensating_plan`, reads the current revision under the lock, and emits `revision_before`/`revision_after`. Downstream nodes stay blocked; rerouting of the downstream edge to the compensation node is done when the compensation plan is registered (`mine plan add --hard <comp-id>`, CLI only) and then rewired (`mine plan rewire-compensation --id <rejected-id> --format json`, CLI only - no MCP tool).
-4. Update the `docs/design/` knowledge base first with corrected target behavior and verified failure evidence.
+2. When correction changes a material decision, update the `docs/design/` knowledge base and complete the ADR approval lifecycle before declaring the replacement target.
+3. Create and commit the canonical Root-visible `docs/plan/reports/<plan-name>-review.md` with `REJECTED`, exact findings, commands, evidence, affected downstream nodes, and the next contiguous sibling compensation ID. The path must be a regular file contained by authoritative Root, not the implementation report or an escaped/symlinked path.
+4. Call `mine plan reject --id <exact-stored-id> --reason <rejection summary> --review-report <review report path> --compensating-plan <comp-id> --format json` (MCP: `mine_plan_reject` with exact stored `id`, `reason`, `review_report`, and `compensating_plan`). The binary may transition `IMPLEMENTED`→`REJECTED`, or the explicitly reviewed infeasible `IN_PROGRESS` edge above, and records all rejection evidence atomically. It never fabricates implementation evidence. Commit only the Root-owned graph result with explicit paths. Downstream nodes stay blocked; registration and rewiring remain separate operations.
 5. Create the repository's next compensating plan number/name (for example `02-1-...`) that identifies the rejected implementation and
    changes target code directly—no alias, shim or migration solely to preserve the rejected behavior.
 6. Give the compensation node hard predecessors, deliverables, concrete steps, verification, acceptance criteria and graph edges. Route
    downstream release through the compensating plan.
-7. Do not implement the compensating plan during review unless the user separately asks for implementation.
-8. Stage only architecture, review, and compensation-plan files, inspect the cached diff, and commit with a Conventional Commit. Never stage hand-edited graph files; MINE owns graph writes.
+7. Register/release the compensation and rewire only through the accepted MINE interface; reuse the preserved lineage worktree when execution is later invoked. Do not implement the compensating plan during review unless the user separately asks for implementation.
+8. Stage only architecture, review, compensation-plan, and CLI-generated graph files owned by this operation; inspect the cached diff and commit with a Conventional Commit. Never hand-edit graph files.
 
 If material product decisions remain unresolved, write the rejection report and ask the user before changing architecture/creating the plan.
 Do not invent the decision merely to finish review.
@@ -310,3 +348,19 @@ downstream plan.
 Lead with `ACCEPTED` or `REJECTED`. Summarize decisive evidence, reviewer-authored fixes and their revalidation, report/plan paths, commit
 hash(es), graph effect, verification results, unrelated changes preserved, whether local release closure was carried out in this session, and
 next action. Say explicitly whether downstream work is released.
+
+## Shared toolchains and Plan-isolated mutable outputs
+
+Reuse Root-managed toolchains, dependency downloads, virtual environments, and
+only caches proven read-only or safely content-addressed. Do not create a
+second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
+cache directory in a linked Plan worktree.
+
+Mutable build, test, generation, coverage, packaging, and runner outputs must
+use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
+`CARGO_TARGET_DIR` to the exact Plan namespace, for example
+`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
+worktree-local `target`. If a measured output is predictably very large,
+record the estimate and pause for explicit owner agreement on serialization,
+a coarser exclusive namespace, and cleanup; never fall back automatically to a
+globally shared mutable directory.

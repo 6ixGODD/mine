@@ -26,13 +26,16 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::config::{BranchesConfig, DesignConfig, GraphConfig, MineConfig, PlanConfig};
+use crate::domain::config::{
+    AdrConfig, BranchesConfig, DesignConfig, GraphConfig, MineConfig, PlanConfig,
+};
 use crate::domain::design_marker::{
     DESIGN_MARKER_FILE, DESIGN_ROOT_INDEX, DesignMarker, DesignRootState, classify,
 };
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::ports::{Clock, UuidSource};
 use crate::domain::repository_identity::{RepositoryIdentity, root_version_from_cargo_manifest};
+use crate::infrastructure::adr_store::AdrStore;
 use crate::infrastructure::git;
 
 /// Default managed integration branch.
@@ -42,10 +45,9 @@ const DEFAULT_INTEGRATION_BRANCH: &str = "dev";
 /// never erases existing agent agreements.
 const AGENTS_MINE_MARKER: &str = "<!-- mine-managed-agents -->";
 
-/// `.mine/.gitignore` content: MINE runtime and locks are local diagnostics,
-/// not fact sources, and must not be committed.
-const MINE_GITIGNORE: &str =
-    "# MINE runtime and locks are local diagnostics, not fact sources.\nruntime/\nlocks/\n";
+/// `.mine/.gitignore` content: MINE runtime, locks, and mutable build outputs
+/// are local diagnostics, not fact sources, and must not be committed.
+const MINE_GITIGNORE: &str = "# MINE runtime, locks, and mutable build outputs are local diagnostics, not fact sources.\nruntime/\nlocks/\nbuild/\n";
 
 /// Repository-relative design root index path.
 const DESIGN_ROOT_RELATIVE: &str = "docs/design/index.md";
@@ -271,6 +273,16 @@ impl<'a> InitService<'a> {
         ensure_mine_gitignore(&mine_dir)?;
         actions.push(ensure_agents_md(repo_root)?);
 
+        // The current MINE repository carries ADR-0001..0009 as its
+        // pre-registry bootstrap evidence. Import them exactly once when all
+        // nine bodies are present. Ordinary user repositories without that
+        // bootstrap set are left untouched until they create ADRs normally.
+        if has_complete_adr_bootstrap(repo_root) {
+            let config = read_existing_config(&config_path)?.expect("config exists after init");
+            let _ = AdrStore::new(repo_root, &config.adr)
+                .bootstrap_if_absent(&self.clock.now_utc_rfc3339())?;
+        }
+
         Ok(InitOutcome {
             repository_id: identity.repository_id,
             mine_code_version: identity.mine_code_version,
@@ -282,6 +294,24 @@ impl<'a> InitService<'a> {
             actions,
         })
     }
+}
+
+fn has_complete_adr_bootstrap(repo_root: &Path) -> bool {
+    let decisions = repo_root.join("docs/design/decisions");
+    (1..=9).all(|number| {
+        let prefix = format!("{number:04}-");
+        std::fs::read_dir(&decisions)
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".md"))
+            })
+    })
 }
 
 fn read_existing_identity(config_path: &Path) -> MineResult<Option<RepositoryIdentity>> {
@@ -378,12 +408,15 @@ fn build_default_config(identity: &RepositoryIdentity, stable_branch: &str) -> M
             root: "docs/plan".to_string(),
             ephemeral: true,
             purge_before_stable_release: true,
+            worktrees_root: ".mine/worktrees".to_string(),
+            shared_environment_root: ".".to_string(),
         },
         graph: GraphConfig {
             source: "docs/plan/execution-graph.toml".to_string(),
             rendered: "docs/plan/execution-graph.md".to_string(),
             lock_timeout_ms: 5000,
         },
+        adr: AdrConfig::default(),
     }
 }
 

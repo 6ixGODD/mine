@@ -1,7 +1,7 @@
 ---
 name: mine-sync
 description: Reconcile MINE-owned design with repository reality using code-first synchronization. Use when onboarding an existing repository, after substantial out-of-band changes, when design drift is suspected, before stable release, or when the user requests a repository/design audit. Creates a verified local backup before rewriting design, then updates design to match current code unless the user explicitly protects a decision. Does not modify business code without a separate architecture/plan/execute flow.
-version: 0.1.9
+version: 0.1.10
 ---
 
 # MINE Sync
@@ -228,3 +228,19 @@ The user accepts the token and runtime cost of an unscoped request. The agent mu
 ## Final attestation
 
 A full sync report records repository, branch, commit, scope, backup path, inspected evidence, design changes, protected decisions, discrepancy classifications, incomplete coverage, and status (`SYNCHRONIZED`, `SYNCHRONIZED_WITH_WARNINGS`, or `BLOCKED`). Only a full-release sync with no blocking uncertainty permits stable release closure.
+
+## Shared toolchains and Plan-isolated mutable outputs
+
+Reuse Root-managed toolchains, dependency downloads, virtual environments, and
+only caches proven read-only or safely content-addressed. Do not create a
+second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
+cache directory in a linked Plan worktree.
+
+Mutable build, test, generation, coverage, packaging, and runner outputs must
+use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
+`CARGO_TARGET_DIR` to the exact Plan namespace, for example
+`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
+worktree-local `target`. If a measured output is predictably very large,
+record the estimate and pause for explicit owner agreement on serialization,
+a coarser exclusive namespace, and cleanup; never fall back automatically to a
+globally shared mutable directory.

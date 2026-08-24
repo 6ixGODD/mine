@@ -107,6 +107,25 @@ A repository normally needs to be initialized only once.
 `mine init` creates the repository state required by MINE, including `docs/design/`. It does not design the system for
 you or modify application code.
 
+### ADR approval and Design readiness
+
+Material architecture decisions are recorded as individual ADRs. The
+registry is the machine source of status and binds approval to the exact
+decision-body digest:
+
+```sh
+mine adr add --id ADR-0010 --path docs/design/decisions/0010-example.md --title "Example decision"
+mine adr propose --id ADR-0010
+mine adr show --id ADR-0010
+mine adr approve --id ADR-0010 --by repository-owner --note "Approved for planning"
+mine design readiness --scope plan01
+```
+
+`mine-arch` may prepare and propose a DRAFT ADR, but it cannot approve one or
+infer approval. If an applicable planning-blocking ADR is unresolved,
+readiness reports the blocker and planning must stop. Editing an approved ADR
+body changes its digest and requires a new proposal/approval cycle.
+
 ---
 
 ## 3. Start an Engineering Change
@@ -162,6 +181,12 @@ Once the Design is clear:
 ```text
 mine-plan-create <scope to plan>
 ```
+
+Plans use canonical hierarchical identities such as `plan01-01` and
+`plan01-02-C01`. The file must be exactly
+`docs/plan/<id>-<lower-kebab-slug>.md`; compensation IDs are contiguous sibling
+`C` ordinals in the same lineage. Legacy IDs such as `01` are not allocated
+for new Plans.
 
 For example:
 
@@ -284,6 +309,22 @@ You normally do not need to manually:
 - integrate accepted Plan branches into `dev`.
 
 MINE and the corresponding Skills manage these states automatically.
+
+### Mutable build and test outputs
+
+Plan worktrees reuse Root-managed toolchains and dependency downloads, but
+mutable outputs are owned by the exact Plan node:
+
+```text
+<Root>/.mine/build/<plan-id>/<tool-or-output-class>/
+```
+
+For Rust, use `CARGO_TARGET_DIR=<Root>/.mine/build/<plan-id>/cargo-target`.
+Do not use Root `target` or create a worktree-local `target`, `.venv`, `venv`,
+`node_modules`, or equivalent cache. A compensation Plan receives a fresh
+namespace even when it reuses its predecessor's lineage worktree. A measured
+exceptionally large output requires an estimate and explicit owner agreement
+on serialization, namespace coarsening, and cleanup before building.
 
 ---
 

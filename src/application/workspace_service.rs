@@ -193,7 +193,7 @@ impl<'a> WorkspaceService<'a> {
         integration_branch: &str,
     ) -> PlanWorkspace {
         PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 1,
             project_id: "mine-is-not-everyones".to_string(),
             workspace_id,
@@ -220,7 +220,7 @@ mod tests {
         std::fs::create_dir_all(store.toml_path().parent().unwrap()).unwrap();
         // Write a minimal graph at revision 0 with no plans.
         let ws = PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 0,
             project_id: "p".to_string(),
             workspace_id: String::new(),
@@ -240,7 +240,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = TomlStore::new(root.path());
         let ws = PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 0,
             project_id: "p".to_string(),
             workspace_id: String::new(),

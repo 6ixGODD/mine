@@ -43,7 +43,13 @@ fn release_preflight_reports_version_and_state() {
         assert!(env["data"]["can_release"].is_boolean());
     } else {
         assert_eq!(exit, 4, "unexpected release-preflight failure: {env}");
-        assert_eq!(env["error"]["code"], "MINE_GRAPH_NOT_INITIALIZED");
+        assert!(
+            matches!(
+                env["error"]["code"].as_str(),
+                Some("MINE_GRAPH_NOT_INITIALIZED" | "MINE_GRAPH_INVALID")
+            ),
+            "temporary graph absence or fail-closed schema refusal expected: {env}"
+        );
     }
 }
 

@@ -48,7 +48,12 @@ impl GlobalOpts {
 /// A resolved command context: repository root, configuration, and graph
 /// store. Handlers use this to access MINE state consistently.
 pub struct CommandContext {
+    /// Repository/worktree against which non-graph commands operate.
     pub repo_root: PathBuf,
+    /// Worktree from which the command was invoked.
+    pub caller_root: PathBuf,
+    /// Main/integration worktree that owns the graph, lock, and revision.
+    pub authority_root: PathBuf,
     pub config: Option<MineConfig>,
     pub store: TomlStore,
 }
@@ -78,49 +83,68 @@ impl CommandContext {
 /// looking for `.mine/config.toml`, then falling back to a `.git`-rooted
 /// tree. Returns [`MineError::RepositoryNotFound`] when no repository can be
 /// located.
-pub fn resolve_repo_root(override_root: Option<&Path>) -> MineResult<PathBuf> {
-    if let Some(explicit) = override_root {
-        let canonical = explicit
+pub fn resolve_repo_roots(override_root: Option<&Path>) -> MineResult<(PathBuf, PathBuf)> {
+    let candidate = if let Some(explicit) = override_root {
+        explicit
             .canonicalize()
             .map_err(|e| MineError::RepositoryNotFound {
                 detail: format!(
                     "--repo {} could not be canonicalized: {e}",
                     explicit.display()
                 ),
-            })?;
-        return Ok(canonical);
-    }
-    if let Ok(cwd) = std::env::current_dir() {
+            })?
+    } else if let Ok(cwd) = std::env::current_dir() {
         let mut current: &Path = &cwd;
         loop {
             if current.join(".mine").join("config.toml").exists() {
-                return Ok(current.to_path_buf());
+                break current.to_path_buf();
             }
             if current.join(".git").exists() {
                 // A git repo without MINE config: use it as the root and let
                 // the command layer decide whether initialization is required.
-                return Ok(current.to_path_buf());
+                break current.to_path_buf();
             }
             match current.parent() {
                 Some(parent) => current = parent,
-                None => break,
+                None => {
+                    return Err(MineError::RepositoryNotFound {
+                        detail: "no .mine/config.toml or .git found walking up from cwd"
+                            .to_string(),
+                    });
+                }
             }
         }
+    } else {
+        return Err(MineError::RepositoryNotFound {
+            detail: "current directory is unavailable".to_string(),
+        });
+    };
+
+    if candidate.join(".git").exists() {
+        crate::infrastructure::git::authority_and_caller_root(&candidate)
+    } else {
+        Ok((candidate.clone(), candidate))
     }
-    Err(MineError::RepositoryNotFound {
-        detail: "no .mine/config.toml or .git found walking up from cwd".to_string(),
-    })
+}
+
+/// Resolves the caller repository/worktree. Graph callers should use the
+/// authoritative root returned by [`resolve_repo_roots`] instead.
+pub fn resolve_repo_root(override_root: Option<&Path>) -> MineResult<PathBuf> {
+    resolve_repo_roots(override_root).map(|(_authority, caller)| caller)
 }
 
 /// Builds a [`CommandContext`] for a command, loading `.mine/config.toml` if
 /// present (commands that require initialization will fail later via
 /// [`CommandContext::require_config`]).
 pub fn build_context(global: &GlobalOpts) -> MineResult<CommandContext> {
-    let repo_root = resolve_repo_root(global.repo.as_deref())?;
+    let (authority_root, caller_root) = resolve_repo_roots(global.repo.as_deref())?;
+    let repo_root = caller_root.clone();
     let config = load_config(&repo_root);
-    let store = TomlStore::new(&repo_root);
+    let store = TomlStore::new(&authority_root);
     Ok(CommandContext {
         repo_root,
+        caller_root,
+        authority_root,
         config,
         store,
     })

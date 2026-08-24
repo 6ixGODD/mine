@@ -169,6 +169,7 @@ fn command_route(cmd: &Commands) -> (&'static str, &'static str, Vec<String>, &'
         Commands::Graph { action } => graph_route(action),
         Commands::Plan { action } => plan_route(action),
         Commands::Design { action } => design_route(action),
+        Commands::Adr { action } => adr_route(action),
         Commands::Agent { action } => agent_route(action),
         Commands::Repository { action } => repository_route(action),
         Commands::Dist { action } => dist_route(action),
@@ -304,6 +305,15 @@ fn graph_route(a: &GraphCmd) -> (&'static str, &'static str, Vec<String>, &'stat
     match a {
         GraphCmd::Validate => ("graph", "validate", vec![], "graph.validate"),
         GraphCmd::Render => ("graph", "render", vec![], "graph.render"),
+        GraphCmd::RepairProvenance { expected_revision } => (
+            "graph",
+            "repair-provenance",
+            vec![
+                "--expected-revision".to_string(),
+                expected_revision.to_string(),
+            ],
+            "graph.repair-provenance",
+        ),
         GraphCmd::Status => ("graph", "status", vec![], "graph.status"),
         GraphCmd::Ready => ("graph", "ready", vec![], "graph.ready"),
         GraphCmd::Wave => ("graph", "wave", vec![], "graph.wave"),
@@ -341,6 +351,11 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
             push_opt(&mut v, "id", Some(&a.id));
             ("plan", "show", v, "plan.show")
         }
+        PlanCmd::Prepare(a) => {
+            let mut v = Vec::new();
+            push_opt(&mut v, "id", Some(&a.id));
+            ("plan", "prepare", v, "plan.prepare")
+        }
         PlanCmd::Start(a) => {
             let mut v = Vec::new();
             push_opt(&mut v, "id", Some(&a.id));
@@ -369,6 +384,7 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
             push_opt(&mut v, "id", Some(&a.id));
             push_opt(&mut v, "compensating-plan", a.compensating_plan.as_deref());
             push_opt(&mut v, "reason", a.reason.as_deref());
+            push_opt(&mut v, "review-report", a.review_report.as_deref());
             ("plan", "reject", v, "plan.reject")
         }
         PlanCmd::Release(a) => {
@@ -389,6 +405,82 @@ fn design_route(a: &DesignCmd) -> (&'static str, &'static str, Vec<String>, &'st
         DesignCmd::Backup => ("design", "backup", vec![], "design.backup"),
         DesignCmd::Validate => ("design", "validate", vec![], "design.validate"),
         DesignCmd::Status => ("design", "status", vec![], "design.status"),
+        DesignCmd::Readiness { scope } => {
+            let mut v = Vec::new();
+            push_opt(&mut v, "scope", scope.as_deref());
+            ("design", "readiness", v, "design.readiness")
+        }
+    }
+}
+
+fn adr_route(a: &AdrCmd) -> (&'static str, &'static str, Vec<String>, &'static str) {
+    match a {
+        AdrCmd::Add(a) => {
+            let mut v = vec![
+                "--id".to_string(),
+                a.id.clone(),
+                "--path".to_string(),
+                a.path.clone(),
+                "--title".to_string(),
+                a.title.clone(),
+            ];
+            v.push("--planning-blocking".to_string());
+            v.push(a.planning_blocking.to_string());
+            for scope in &a.planning_scopes {
+                v.push("--scope".to_string());
+                v.push(scope.clone());
+            }
+            ("adr", "add", v, "adr.add")
+        }
+        AdrCmd::Show(a) => (
+            "adr",
+            "show",
+            vec!["--id".to_string(), a.id.clone()],
+            "adr.show",
+        ),
+        AdrCmd::List => ("adr", "list", vec![], "adr.list"),
+        AdrCmd::Propose(a) => (
+            "adr",
+            "propose",
+            vec!["--id".to_string(), a.id.clone()],
+            "adr.propose",
+        ),
+        AdrCmd::Approve(a) => (
+            "adr",
+            "approve",
+            vec![
+                "--id".to_string(),
+                a.id.clone(),
+                "--by".to_string(),
+                a.by.clone(),
+                "--note".to_string(),
+                a.note.clone(),
+            ],
+            "adr.approve",
+        ),
+        AdrCmd::Reject(a) => (
+            "adr",
+            "reject",
+            vec![
+                "--id".to_string(),
+                a.id.clone(),
+                "--reason".to_string(),
+                a.reason.clone(),
+            ],
+            "adr.reject",
+        ),
+        AdrCmd::Supersede(a) => (
+            "adr",
+            "supersede",
+            vec![
+                "--id".to_string(),
+                a.id.clone(),
+                "--replacement".to_string(),
+                a.replacement.clone(),
+            ],
+            "adr.supersede",
+        ),
+        AdrCmd::Validate => ("adr", "validate", vec![], "adr.validate"),
     }
 }
 

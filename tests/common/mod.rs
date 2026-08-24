@@ -41,6 +41,8 @@ pub fn node(id: &str, status: PlanStatus, hard: &[&str], soft: &[&str]) -> PlanN
         id: id.to_string(),
         path: format!("docs/plan/{id}.md"),
         title: id.to_string(),
+        branch: String::new(),
+        branch_anchor: String::new(),
         status,
         hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
         soft_predecessors: soft.iter().map(|s| s.to_string()).collect(),
@@ -57,6 +59,8 @@ pub fn node(id: &str, status: PlanStatus, hard: &[&str], soft: &[&str]) -> PlanN
         updated_at: String::new(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        lineage_id: String::new(),
+        worktree_path: String::new(),
     }
 }
 

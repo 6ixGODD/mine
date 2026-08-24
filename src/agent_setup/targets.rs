@@ -4,7 +4,7 @@
 //! Per-Agent installation targets and configuration formats.
 //!
 //! Destinations are derived from the official client documentation (see the
-//! module-level docs in [`super::mod`] for the research register). The critical
+//! parent module documentation for the research register). The critical
 //! Explicit `--config-root` isolation. There are TWO
 //! separate, never-mixed construction paths for the environment:
 //!

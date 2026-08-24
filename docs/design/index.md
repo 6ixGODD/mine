@@ -70,6 +70,8 @@ planning, execution, review, final sync, release
 10. During `mine-arch`, user requirements define target behavior even when current code differs.
 11. Design indexes remain small; detailed documents are split before they become context hazards.
 12. “Destructive” authority is bounded to managed design and temporary MINE artifacts; arbitrary repository destruction is forbidden.
+13. Material architecture decisions are explicitly approved by the repository
+    owner and digest-bound before their scope becomes planning-ready.
 
 ## Design map
 

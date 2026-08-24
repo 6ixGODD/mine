@@ -26,6 +26,8 @@ Every Skill:
 - records exact design references in plans and reports;
 - obeys standing managed-branch authorization and preserves unrelated changes;
 - does not invent unsupported harness behavior.
+- parses only canonical Plan IDs (`planNN(?:-NN)*(?:-CNN)?`) and derives neither
+  filenames nor compensation IDs with ad-hoc string conventions.
 
 ## `mine-arch`
 
@@ -54,6 +56,24 @@ It:
 6. splits documents that become oversized or mix ownership;
 7. updates parent indexes and cross-links;
 8. validates design and hands off to planning.
+
+### ADR-first approval gate
+
+Before detailed Design becomes planning-ready, `mine-arch` extracts each
+material decision into a DRAFT ADR, proposes digest-bound review candidates,
+and stops for explicit user approval. It never self-approves or infers batch
+approval. After recorded approval/rejection, it completes Design consistent
+with approved ADRs and runs scoped Design readiness. Complex projects may add
+a project-specific detailed-design coverage matrix; the Skill does not impose
+one universal maturity schema.
+
+When architecture discovery proves an already `IN_PROGRESS` immutable Plan
+infeasible, `mine-arch` may, only after recording the replacement ADR approval
+and a canonical independent report, invoke the bounded active rejection
+transition. This is not generic graph administration: it may only preserve and
+reject the named stopped Plan with its next sibling compensation. It never
+marks implementation evidence, rewires arbitrary successors, or resumes
+execution.
 
 It does not silently treat current code as target architecture when the user's requirement changes that target.
 
@@ -85,8 +105,18 @@ It:
 - creates immutable plans under `docs/plan/`;
 - records exact design paths and anchors;
 - registers graph nodes through MCP or JSON CLI;
+- allocates canonical hierarchical IDs and filenames and, for compensation,
+  the next sibling `C` ordinal in the rejected lineage;
+- refuses registration/release until applicable blocking ADRs are approved and
+  Design readiness succeeds;
 - defines ownership, dependencies, verification, and reports;
 - refuses planning on the stable branch.
+
+For governance recovery, it may allocate one serialized base Plan whose write
+scope overlaps a stopped infeasible Plan only when the accepted Design names
+the recovery, the user has frozen the old lane, and no agent may resume it. The
+planner records this ownership transfer and the exact post-recovery
+compensation sequence; it does not pretend the two Plans are parallel-safe.
 
 ### Scope-first planning contract
 
@@ -152,15 +182,33 @@ observe repository reality -> compare established practice -> make a project-spe
 
 It:
 
-- prepares or switches to the managed plan branch;
+- is invoked as `mine-plan-exec <plan-id-or-registered-path>`, normalizes the
+  accepted numeric/`P` shorthand by unique match against `mine graph show`,
+  and resolves the authoritative Plan document through `mine plan show` using
+  the exact stored ID, never by guessing a filename or compensation ordinal;
+- prepares or reuses the registered linked worktree with `mine plan prepare`;
+- reuses the base lineage worktree for every compensation node, switching only
+  that clean linked checkout while preserving rejected branch refs;
+- performs all implementation writes and commits there and never switches the
+  Root worktree away from `dev`;
 - validates workspace, graph, predecessors, design references, and revision;
-- starts the plan through MINE before mutation;
+- starts the plan through MINE before mutation and verifies the returned
+  `branch_anchor` equals the prepared worktree HEAD;
 - implements only declared scope;
 - commits scoped work and writes an ephemeral report;
 - records implementation evidence through MINE;
-- never self-accepts or merges itself.
+- never self-accepts, self-rejects, or merges itself;
+- when an immutable requirement is proven infeasible, stops with committed
+  minimal reproduction evidence when safe, preserves clean Root/worktree state,
+  and reports `IN_PROGRESS`; it never fabricates `IMPLEMENTED` to reach review.
 
 ## `mine-plan-review`
+
+Single-Plan mode is invoked as `mine-plan-review
+<plan-id-or-registered-path>`. It uses the same graph-backed, unique-match
+numeric/`P` shorthand normalization as execution, then resolves the immutable
+Plan and linked worktree through the binary using the exact stored ID. Release
+closure retains its explicit phrase-based invocation.
 
 It:
 
@@ -170,7 +218,18 @@ It:
 - may apply only unambiguous local fixes under strict rules;
 - before final stable integration, runs the native stale-plan-reference scan via `mine scan plan-refs --check` (the authoritative cross-platform implementation; no Bash/WSL/Git Bash dependency), rewrites historical comments as durable contracts, and records narrowly scoped fixture exemptions;
 - creates compensation plans for material failures;
-- merges an accepted plan branch into `dev` and deletes the accepted local branch when integration checks pass;
+- reviews and corrects only inside the registered Plan worktree;
+- after a positive verdict, merges the Plan branch into clean Root `dev`, owns
+  conflict resolution and revalidation, and records `ACCEPTED` only after the
+  merge and integration gates succeed;
+- deletes only the clean accepted linked worktree and merged local branch;
+- on rejection, declares the next canonical sibling compensation ID and
+  preserves the shared lineage worktree for its execution;
+- when explicitly asked to review a stopped `IN_PROGRESS` Plan for
+  infeasibility, verifies the executor's reproduction independently, writes the
+  canonical Root-visible review report, and may invoke the evidence-bound
+  rejection transition; it does not apply ordinary implementation acceptance
+  semantics to that mode;
 - carries mechanical release closure via the explicit `mine-plan-review complete release closure` invocation after the repository owner has run the final `mine-sync` (Phase A); it does not itself invoke `mine-sync`;
 - requires only generic release gates (design, graph, terminal state, clean tree, candidate cleanliness); it does not require MINE plugin distribution, four-client installation, or MCP tool-count verification unless reviewing the MINE source repository itself;
 - does not preserve rejected behavior with compatibility shims by default.

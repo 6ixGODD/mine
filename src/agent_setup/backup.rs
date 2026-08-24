@@ -15,7 +15,7 @@
 //!   rather than clobbering it);
 //! - verify the backup can be read and matches the original bytes;
 //! - if backup creation or verification fails, perform **no** external
-//!   mutation (the caller treats [`BackupError`] as a hard stop).
+//!   mutation (the caller treats `BackupError` as a hard stop).
 //!
 //! The backup lives at `<root>/.mine/agent-backups/<config_rel>` (with slashes
 //! turned to `__` in the filename), a deterministic MINE-owned location

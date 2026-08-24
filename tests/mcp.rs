@@ -24,7 +24,8 @@
 #[allow(dead_code)]
 mod common;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use rmcp::model::CallToolRequestParams;
 use rmcp::model::CallToolResult;
@@ -34,6 +35,7 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 
 use mine::domain::status::PlanStatus;
+use mine::{cli, cli::Outcome};
 
 use common::{live_graph_bytes, node, seeded_repo};
 
@@ -116,6 +118,83 @@ fn fixture() -> (TempDir, PathBuf) {
     seeded_repo(vec![p01, p02, p03])
 }
 
+fn git(repo: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .status()
+        .unwrap();
+    assert!(status.success(), "git {args:?}");
+}
+
+fn dispatch(repo: &Path, args: &[&str]) -> Outcome {
+    let mut argv = vec![
+        "mine".to_string(),
+        "--repo".to_string(),
+        repo.display().to_string(),
+    ];
+    argv.extend(args.iter().map(ToString::to_string));
+    cli::dispatch(&argv, "mine")
+}
+
+fn start_fixture() -> (TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().unwrap();
+    let repo = tmp.path().to_path_buf();
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["config", "user.email", "test@example.com"]);
+    git(&repo, &["config", "user.name", "test"]);
+    std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
+    std::fs::write(repo.join(".gitignore"), "/.mine/\n").unwrap();
+    git(&repo, &["add", "README.md", ".gitignore"]);
+    git(&repo, &["commit", "--quiet", "-m", "initial"]);
+    assert_eq!(dispatch(&repo, &["init"]).exit_code, 0);
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "mine init"]);
+    git(&repo, &["switch", "-c", "dev"]);
+    assert_eq!(dispatch(&repo, &["workspace", "open"]).exit_code, 0);
+    // mine-release-allow-plan-reference: MCP multi-Plan setup fixture
+    for id in ["plan02", "plan03"] {
+        let path = format!("docs/plan/{id}-fixture.md");
+        std::fs::write(repo.join(&path), format!("# {id}\n")).unwrap();
+        assert_eq!(
+            dispatch(
+                &repo,
+                &[
+                    "plan",
+                    "add",
+                    "--id",
+                    id,
+                    "--path",
+                    &path,
+                    "--title",
+                    "fixture",
+                    "--design-ref",
+                    "docs/design/index.md",
+                    "--write",
+                    "src/",
+                ],
+            )
+            .exit_code,
+            0
+        );
+        assert_eq!(
+            dispatch(&repo, &["plan", "release", "--id", id]).exit_code,
+            0
+        );
+    }
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "--quiet", "-m", "register plans"]);
+    // mine-release-allow-plan-reference: MCP multi-Plan prepare fixture
+    for id in ["plan02", "plan03"] {
+        assert_eq!(
+            dispatch(&repo, &["plan", "prepare", "--id", id]).exit_code,
+            0
+        );
+    }
+    (tmp, repo)
+}
+
 /// Gracefully closes the client so the child server exits on stdin EOF instead
 /// of being killed on drop (avoids leaking processes on test failure).
 async fn shutdown(client: RunningService<RoleClient, ()>) {
@@ -124,7 +203,7 @@ async fn shutdown(client: RunningService<RoleClient, ()>) {
 }
 
 #[tokio::test]
-async fn lists_all_twelve_tools_with_schemas() {
+async fn lists_all_seventeen_tools_with_schemas() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
     let client = connect(repo).await;
@@ -141,7 +220,12 @@ async fn lists_all_twelve_tools_with_schemas() {
         "mine_graph_ready",
         "mine_graph_wave",
         "mine_plan_show",
+        "mine_graph_repair_provenance",
         "mine_design_validate",
+        "mine_adr_show",
+        "mine_adr_list",
+        "mine_adr_validate",
+        "mine_design_readiness",
         "mine_plan_add",
         "mine_plan_start",
         "mine_plan_mark_implemented",
@@ -151,7 +235,7 @@ async fn lists_all_twelve_tools_with_schemas() {
     for e in expected {
         assert!(names.contains(&e), "missing tool {e}; got {names:?}");
     }
-    assert_eq!(names.len(), 12, "exactly 12 tools; got {names:?}");
+    assert_eq!(names.len(), 17, "exactly 17 tools; got {names:?}");
     for t in &tools {
         assert!(
             !t.input_schema.is_empty(),
@@ -240,6 +324,45 @@ async fn plan_show_returns_plan_fields() {
         .expect("data.plan");
     assert_eq!(plan.get("id").and_then(|i| i.as_str()), Some("02"));
     assert_eq!(plan.get("status").and_then(|s| s.as_str()), Some("READY"));
+    assert!(plan.get("registered_worktree_path").is_some());
+    assert!(plan.get("resolved_worktree_path").is_some());
+    assert!(plan.get("caller_location").is_some());
+    assert_eq!(
+        plan.get("authoritative_revision").and_then(|r| r.as_u64()),
+        Some(72)
+    );
+}
+
+#[tokio::test]
+async fn current_graph_provenance_repair_is_an_idempotent_mcp_operation() {
+    let before = live_graph_bytes();
+    let (tmp, repo) = fixture();
+    let client = connect(repo).await;
+    let value = call_tool(
+        &client,
+        "mine_graph_repair_provenance",
+        json!({ "expected_revision": 72 }),
+    )
+    .await;
+    shutdown(client).await;
+    drop(tmp);
+    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(value.get("ok").and_then(|ok| ok.as_bool()), Some(true));
+    assert_eq!(
+        value
+            .get("data")
+            .and_then(|data| data.get("changed"))
+            .and_then(|changed| changed.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        value.get("revision_before").and_then(|rev| rev.as_u64()),
+        Some(72)
+    );
+    assert_eq!(
+        value.get("revision_after").and_then(|rev| rev.as_u64()),
+        Some(72)
+    );
 }
 
 #[tokio::test]
@@ -268,8 +391,10 @@ async fn plan_add_creates_draft_plan() {
         &client,
         "mine_plan_add",
         json!({
-            "id": "04",
-            "path": "docs/plan/04.md",
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            "id": "plan01-04",
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            "path": "docs/plan/plan01-04-test-node.md",
             "title": "Test node",
             "design_references": ["docs/design/principles.md"],
             "exclusive_write_paths": ["tests/04/"],
@@ -294,12 +419,14 @@ async fn plan_add_creates_draft_plan() {
     assert_eq!(after_rev, before_rev + 1);
 
     // Confirm the new plan is DRAFT (not startable until promoted to READY).
-    let shown = call_tool(&client, "mine_plan_show", json!({ "id": "04" })).await;
+    // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+    let shown = call_tool(&client, "mine_plan_show", json!({ "id": "plan01-04" })).await;
     let plan = shown
         .get("data")
         .and_then(|d| d.get("plan"))
         .expect("data.plan");
-    assert_eq!(plan.get("id").and_then(|i| i.as_str()), Some("04"));
+    // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+    assert_eq!(plan.get("id").and_then(|i| i.as_str()), Some("plan01-04"));
     assert_eq!(plan.get("status").and_then(|s| s.as_str()), Some("DRAFT"));
 
     shutdown(client).await;
@@ -310,17 +437,19 @@ async fn plan_add_creates_draft_plan() {
 #[tokio::test]
 async fn plan_lifecycle_start_implemented_accept() {
     let before = live_graph_bytes();
-    let (tmp, repo) = fixture();
+    let (tmp, repo) = start_fixture();
     let client = connect(repo).await;
 
     // Start a READY node (READY -> IN_PROGRESS).
-    let started = call_tool(&client, "mine_plan_start", json!({ "id": "02" })).await;
+    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+    let started = call_tool(&client, "mine_plan_start", json!({ "id": "plan02" })).await;
     assert_eq!(started.get("ok").and_then(|o| o.as_bool()), Some(true));
     assert_eq!(
         started.get("command").and_then(|c| c.as_str()),
         Some("plan.start")
     );
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "02" })).await;
+    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
     assert_eq!(
         s.get("data")
             .and_then(|d| d.get("plan"))
@@ -334,14 +463,16 @@ async fn plan_lifecycle_start_implemented_accept() {
         &client,
         "mine_plan_mark_implemented",
         json!({
-            "id": "02",
+            // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+            "id": "plan02",
             "report": "docs/plan/reports/02-impl.md",
             "commits": ["abc123"]
         }),
     )
     .await;
     assert_eq!(impld.get("ok").and_then(|o| o.as_bool()), Some(true));
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "02" })).await;
+    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
     assert_eq!(
         s.get("data")
             .and_then(|d| d.get("plan"))
@@ -355,13 +486,15 @@ async fn plan_lifecycle_start_implemented_accept() {
         &client,
         "mine_plan_accept",
         json!({
-            "id": "02",
+            // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+            "id": "plan02",
             "review": "docs/plan/reports/02-review.md"
         }),
     )
     .await;
     assert_eq!(accepted.get("ok").and_then(|o| o.as_bool()), Some(true));
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "02" })).await;
+    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
+    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
     assert_eq!(
         s.get("data")
             .and_then(|d| d.get("plan"))
@@ -376,41 +509,50 @@ async fn plan_lifecycle_start_implemented_accept() {
 }
 
 #[tokio::test]
-async fn plan_reject_after_implemented() {
+async fn plan_reject_in_progress_with_review_evidence() {
     let before = live_graph_bytes();
-    let (tmp, repo) = fixture();
-    let client = connect(repo).await;
+    let (tmp, repo) = start_fixture();
+    // mine-release-allow-plan-reference: MCP rejection review-path fixture
+    let review = "docs/plan/reports/plan03-fixture-review.md";
+    let client = connect(repo.clone()).await;
 
-    // take a node through start -> implemented.
-    call_tool(&client, "mine_plan_start", json!({ "id": "03" })).await;
-    call_tool(
-        &client,
-        "mine_plan_mark_implemented",
-        json!({
-            "id": "03",
-            "report": "docs/plan/reports/03-impl.md",
-            "commits": ["def456"]
-        }),
-    )
-    .await;
+    // Start the Plan, then reject directly from IN_PROGRESS with independent
+    // review evidence. No implementation evidence may be synthesized.
+    // mine-release-allow-plan-reference: MCP rejection Plan fixture
+    let started = call_tool(&client, "mine_plan_start", json!({ "id": "plan03" })).await;
+    assert_eq!(
+        started.get("ok").and_then(|value| value.as_bool()),
+        Some(true),
+        "start result: {started}"
+    );
+    std::fs::create_dir_all(repo.join("docs/plan/reports")).unwrap();
+    std::fs::write(repo.join(review), "independent review\n").unwrap();
 
     let rejected = call_tool(
         &client,
         "mine_plan_reject",
         json!({
-            "id": "03",
+            // mine-release-allow-plan-reference: MCP rejection Plan fixture
+            "id": "plan03",
             "reason": "scope drift",
-            "compensating_plan": "03-1"
+            "review_report": review,
+            // mine-release-allow-plan-reference: MCP compensation Plan fixture
+            "compensating_plan": "plan03-C01"
         }),
     )
     .await;
-    assert_eq!(rejected.get("ok").and_then(|o| o.as_bool()), Some(true));
+    assert_eq!(
+        rejected.get("ok").and_then(|o| o.as_bool()),
+        Some(true),
+        "reject result: {rejected}"
+    );
     assert_eq!(
         rejected.get("command").and_then(|c| c.as_str()),
         Some("plan.reject")
     );
 
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "03" })).await;
+    // mine-release-allow-plan-reference: MCP rejection Plan fixture
+    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan03" })).await;
     let plan = s
         .get("data")
         .and_then(|d| d.get("plan"))
@@ -421,7 +563,17 @@ async fn plan_reject_after_implemented() {
     );
     assert_eq!(
         plan.get("compensating_plan").and_then(|c| c.as_str()),
-        Some("03-1")
+        // mine-release-allow-plan-reference: MCP compensation assertion fixture
+        Some("plan03-C01")
+    );
+    assert_eq!(
+        plan.get("review_report").and_then(|value| value.as_str()),
+        Some(review)
+    );
+    assert!(
+        plan.get("implementation_report")
+            .and_then(|value| value.as_str())
+            .is_some_and(str::is_empty)
     );
 
     shutdown(client).await;

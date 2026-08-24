@@ -70,7 +70,7 @@ fn development_fixture() -> PlanWorkspace {
 
 fn sample_workspace() -> PlanWorkspace {
     PlanWorkspace {
-        schema_version: 1,
+        schema_version: mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
         revision: 7,
         project_id: "mine-is-not-everyones".to_string(),
         workspace_id: "golden-ws".to_string(),
@@ -85,6 +85,8 @@ fn sample_workspace() -> PlanWorkspace {
                 id: "01".to_string(),
                 path: "docs/plan/01.md".to_string(),
                 title: "First".to_string(),
+                branch: String::new(),
+                branch_anchor: String::new(),
                 status: PlanStatus::Accepted,
                 hard_predecessors: vec![],
                 soft_predecessors: vec![],
@@ -101,11 +103,15 @@ fn sample_workspace() -> PlanWorkspace {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                lineage_id: String::new(),
+                worktree_path: String::new(),
             },
             PlanNode {
                 id: "02".to_string(),
                 path: "docs/plan/02.md".to_string(),
                 title: "Second".to_string(),
+                branch: String::new(),
+                branch_anchor: String::new(),
                 status: PlanStatus::Ready,
                 hard_predecessors: vec!["01".to_string()],
                 soft_predecessors: vec![],
@@ -122,6 +128,8 @@ fn sample_workspace() -> PlanWorkspace {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                lineage_id: String::new(),
+                worktree_path: String::new(),
             },
         ],
     }

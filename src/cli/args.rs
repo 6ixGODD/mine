@@ -120,6 +120,11 @@ pub enum Commands {
         #[command(subcommand)]
         action: DesignCmd,
     },
+    /// ADR registry lifecycle.
+    Adr {
+        #[command(subcommand)]
+        action: AdrCmd,
+    },
     /// Agent installer management.
     Agent {
         #[command(subcommand)]
@@ -165,6 +170,12 @@ pub enum GraphCmd {
     Validate,
     /// Render the graph to Markdown.
     Render,
+    /// Repair supported schema-v1 Plan provenance and upgrade the graph.
+    RepairProvenance {
+        /// Authoritative graph revision expected by the caller.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+    },
     /// Show graph status (revision, branches, plan count).
     Status,
     /// Show the ready frontier.
@@ -207,13 +218,15 @@ pub enum PlanCmd {
     Add(PlanAddArgs),
     /// Show a plan node.
     Show(PlanShowArgs),
+    /// Prepare or reuse the registered linked worktree.
+    Prepare(PlanShowArgs),
     /// Start a plan (DRAFT/READY -> IN_PROGRESS).
     Start(PlanStartArgs),
     /// Mark a plan IMPLEMENTED.
     Implemented(PlanImplementedArgs),
     /// Accept a plan.
     Accept(PlanAcceptArgs),
-    /// Reject a plan and optionally set a compensating plan.
+    /// Reject a plan with independent review evidence and a compensation.
     Reject(PlanRejectArgs),
     /// Release a DRAFT plan into the startable frontier.
     Release(PlanReleaseArgs),
@@ -275,6 +288,9 @@ pub struct PlanRejectArgs {
     /// Rejection reason.
     #[arg(long, value_name = "REASON")]
     pub reason: Option<String>,
+    /// Canonical independent review report path.
+    #[arg(long = "review-report", value_name = "PATH")]
+    pub review_report: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -299,6 +315,83 @@ pub enum DesignCmd {
     Validate,
     /// Show design status.
     Status,
+    /// Check scoped ADR and Design readiness.
+    Readiness {
+        #[arg(long, value_name = "SCOPE")]
+        scope: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AdrCmd {
+    /// Register a DRAFT ADR body.
+    Add(AdrAddArgs),
+    /// Show one ADR.
+    Show(AdrShowArgs),
+    /// List all registry entries.
+    List,
+    /// Freeze a DRAFT ADR with its body digest.
+    Propose(AdrIdArgs),
+    /// Record explicit owner approval for a proposed digest.
+    Approve(AdrApproveArgs),
+    /// Reject a proposed ADR.
+    Reject(AdrRejectArgs),
+    /// Supersede an approved ADR with an approved replacement.
+    Supersede(AdrSupersedeArgs),
+    /// Validate registry structure and body digests.
+    Validate,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrAddArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    #[arg(long, value_name = "PATH")]
+    pub path: String,
+    #[arg(long, value_name = "TITLE")]
+    pub title: String,
+    #[arg(long, default_value_t = true)]
+    pub planning_blocking: bool,
+    #[arg(long = "scope", value_name = "SCOPE")]
+    pub planning_scopes: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrShowArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrIdArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrApproveArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    #[arg(long, value_name = "ACTOR")]
+    pub by: String,
+    #[arg(long, value_name = "NOTE")]
+    pub note: String,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrRejectArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    #[arg(long, value_name = "REASON")]
+    pub reason: String,
+}
+
+#[derive(Args, Debug)]
+pub struct AdrSupersedeArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    #[arg(long, value_name = "ID")]
+    pub replacement: String,
 }
 
 #[derive(Subcommand, Debug)]

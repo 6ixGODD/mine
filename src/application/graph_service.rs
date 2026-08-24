@@ -14,7 +14,7 @@
 use crate::domain::error::MineResult;
 use crate::domain::graph::PlanWorkspace;
 use crate::domain::validation;
-use crate::infrastructure::toml_store::TomlStore;
+use crate::infrastructure::toml_store::{ProvenanceRepairOutcome, TomlStore};
 
 /// Application-level read-only graph service.
 pub struct GraphService<'a> {
@@ -32,7 +32,7 @@ impl<'a> GraphService<'a> {
     /// validate`).
     ///
     /// # Errors
-    /// Propagates [`MineError::GraphNotInitialized`] when no graph exists or
+    /// Propagates [`crate::domain::error::MineError::GraphNotInitialized`] when no graph exists or
     /// `MineError::GraphInvalid`/`GraphCycle` on validation failure.
     pub fn validate(&self) -> MineResult<PlanWorkspace> {
         self.store.load()
@@ -69,11 +69,29 @@ impl<'a> GraphService<'a> {
         self.store.render()
     }
 
+    /// Performs the supported revision-checked schema-v1/v2 provenance
+    /// migration, or returns an idempotent no-op for an already-valid v3 graph.
+    pub fn repair_provenance(&self, expected_revision: u64) -> MineResult<ProvenanceRepairOutcome> {
+        self.store
+            .repair_provenance_with_revision(expected_revision)
+    }
+
+    /// Returns the authoritative repository root backing this graph service.
+    #[must_use]
+    pub fn repo_root(&self) -> &std::path::Path {
+        self.store.repo_root()
+    }
+
+    /// Returns the configured repository-relative worktree root.
+    pub fn worktrees_root(&self) -> MineResult<String> {
+        self.store.worktrees_root()
+    }
+
     /// The shared mutation transaction: lock → reload → recheck revision →
     /// one domain transition → atomic write → render → release lock. The CLI
     /// and MCP both call this for every graph mutation; neither duplicates the
     /// transaction. The CLI's `plan.*` handlers and the MCP mutating tools
-    /// route through [`PlanService`], which calls this internally.
+    /// route through [`crate::application::plan_service::PlanService`], which calls this internally.
     ///
     /// `mutate` receives the reloaded workspace, applies one domain
     /// transition, and should set `revision = expected_revision + 1`. The store
@@ -129,6 +147,7 @@ pub struct PlanAcceptRequest {
 pub struct PlanRejectRequest {
     pub id: String,
     pub reason: String,
+    pub review_report: String,
     pub compensating_plan: String,
     pub updated_at: String,
 }
@@ -166,10 +185,10 @@ mod tests {
         use crate::domain::graph::{PlanNode, PlanWorkspace};
         use crate::domain::status::PlanStatus;
         let ws = PlanWorkspace {
-            schema_version: 1,
+            schema_version: crate::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
             revision: 5,
             project_id: "p".to_string(),
-            workspace_id: "ws".to_string(),
+            workspace_id: "bootstrap-mine-v1".to_string(),
             stable_branch: "master".to_string(),
             integration_branch: "dev".to_string(),
             stable_baseline_commit: "c".to_string(),
@@ -180,6 +199,8 @@ mod tests {
                 id: "01".to_string(),
                 path: "docs/plan/01.md".to_string(),
                 title: "First".to_string(),
+                branch: String::new(),
+                branch_anchor: String::new(),
                 status: PlanStatus::Ready,
                 hard_predecessors: vec![],
                 soft_predecessors: vec![],
@@ -196,6 +217,8 @@ mod tests {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                lineage_id: String::new(),
+                worktree_path: String::new(),
             }],
         };
         std::fs::create_dir_all(store.toml_path().parent().unwrap()).unwrap();

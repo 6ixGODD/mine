@@ -66,6 +66,7 @@ impl PlanStatus {
             (Self::Blocked, Self::Ready) => true,
             (Self::Ready, Self::InProgress) => true,
             (Self::InProgress, Self::Implemented) => true,
+            (Self::InProgress, Self::Rejected) => true,
             (Self::Implemented, Self::Accepted) => true,
             (Self::Implemented, Self::Rejected) => true,
             // Idempotent no-op: same status is allowed (re-validate without
@@ -118,6 +119,7 @@ mod tests {
     fn allowed_edges_pass() -> Result<(), MineError> {
         PlanStatus::Ready.validate_transition("02", PlanStatus::InProgress)?;
         PlanStatus::InProgress.validate_transition("02", PlanStatus::Implemented)?;
+        PlanStatus::InProgress.validate_transition("02", PlanStatus::Rejected)?;
         PlanStatus::Implemented.validate_transition("02", PlanStatus::Accepted)?;
         PlanStatus::Implemented.validate_transition("02", PlanStatus::Rejected)?;
         PlanStatus::Blocked.validate_transition("02", PlanStatus::Ready)?;

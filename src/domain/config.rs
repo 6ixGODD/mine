@@ -31,6 +31,42 @@ pub struct MineConfig {
     pub plan: PlanConfig,
     /// Execution-graph persistence configuration.
     pub graph: GraphConfig,
+    /// ADR registry persistence configuration.
+    #[serde(default)]
+    pub adr: AdrConfig,
+}
+
+/// ADR registry persistence configuration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdrConfig {
+    #[serde(default = "default_adr_registry")]
+    pub registry: String,
+    #[serde(default = "default_adr_index")]
+    pub rendered_index: String,
+    #[serde(default = "default_adr_lock_timeout")]
+    pub lock_timeout_ms: u32,
+}
+
+impl Default for AdrConfig {
+    fn default() -> Self {
+        Self {
+            registry: default_adr_registry(),
+            rendered_index: default_adr_index(),
+            lock_timeout_ms: default_adr_lock_timeout(),
+        }
+    }
+}
+
+fn default_adr_registry() -> String {
+    "docs/design/decisions/adr-registry.toml".to_string()
+}
+
+fn default_adr_index() -> String {
+    "docs/design/decisions/index.md".to_string()
+}
+
+fn default_adr_lock_timeout() -> u32 {
+    5000
 }
 
 impl MineConfig {
@@ -90,6 +126,20 @@ pub struct PlanConfig {
     pub ephemeral: bool,
     /// Whether the plan workspace must be purged before stable release.
     pub purge_before_stable_release: bool,
+    /// Repository-relative root for canonical Plan linked worktrees.
+    #[serde(default = "default_worktrees_root")]
+    pub worktrees_root: String,
+    /// Repository-relative root that owns shared language environments/caches.
+    #[serde(default = "default_shared_environment_root")]
+    pub shared_environment_root: String,
+}
+
+fn default_worktrees_root() -> String {
+    ".mine/worktrees".to_string()
+}
+
+fn default_shared_environment_root() -> String {
+    ".".to_string()
 }
 
 /// Execution-graph persistence configuration.
