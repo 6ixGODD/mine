@@ -1,7 +1,7 @@
 ---
 name: mine-arch
 description: Create or overhaul a repository's modular architecture source of truth rooted at docs/design/index.md and initialize the repository's engineering governance. Use for new projects, weak or stale architecture, major boundary changes, or repository setup. Inspects real code and requirements, performs mandatory official-documentation research, designs abstract architecture before detailed design, applies SOLID without speculative abstraction, creates or repairs language-specific formatter/linter/type/test/CI configuration, establishes durable AGENTS.md rules, and validates the resulting quality gates.
-version: 0.1.11
+version: 0.1.12
 ---
 
 # MINE Architecture

@@ -1,7 +1,7 @@
 ---
 name: mine-plan-create
 description: "Create or update an evidence-backed, architecture-governed software implementation plan that is precise enough for independent coding agents to execute without rediscovering design decisions. Scope-first: an explicit user scope defines the planning boundary; research-backed: substantive planning requires mandatory scope-bounded web research comparing established practice; evidence-on-demand: repository inspection is proportional to scope. Use for initial project planning, incremental features, refactors, migrations, agent workflows, data/retrieval/tool contracts, or compensating plans. Routes material Design gaps back to mine-arch; never silently overrides accepted Design."
-version: 0.1.11
+version: 0.1.12
 ---
 
 # MINE Plan Create

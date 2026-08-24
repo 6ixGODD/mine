@@ -1,6 +1,6 @@
 schema_version = 1
 repository_id = "9c672a03-bab3-566e-9588-39cb5e6445c3"
-mine_code_version = "0.1.11"
+mine_code_version = "0.1.12"
 
 [branches]
 stable = "master"

@@ -725,17 +725,14 @@ fn spaces_non_ascii_and_two_lineages_prepare_independently() {
 }
 
 #[test]
-fn add_failure_leaves_truthful_recoverable_branch_evidence() {
+fn non_directory_worktree_root_is_refused_without_mutation() {
     let fixture = Fixture::new("add-failure", ".mine/worktrees");
     std::fs::write(fixture.root.join(".mine/worktrees"), "not a directory\n").unwrap();
     let before = fixture.snapshot();
     let outcome = dispatch(&fixture.root, &["plan", "prepare", "--id", BASE_ID]);
     fixture.assert_refusal(&outcome, &before);
     assert!(!fixture.target().exists());
-    assert_eq!(
-        git_output(&fixture.root, &["rev-parse", BASE_BRANCH]),
-        before.head
-    );
+    assert!(!git_branch_exists(&fixture.root, BASE_BRANCH));
 }
 
 #[cfg(windows)]

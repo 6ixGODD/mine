@@ -1,7 +1,7 @@
 ---
 name: mine-sync
 description: Reconcile MINE-owned design with repository reality using code-first synchronization. Use when onboarding an existing repository, after substantial out-of-band changes, when design drift is suspected, before stable release, or when the user requests a repository/design audit. Creates a verified local backup before rewriting design, then updates design to match current code unless the user explicitly protects a decision. Does not modify business code without a separate architecture/plan/execute flow.
-version: 0.1.11
+version: 0.1.12
 ---
 
 # MINE Sync

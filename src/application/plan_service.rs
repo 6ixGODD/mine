@@ -60,6 +60,11 @@ fn resolve_with_missing_tail(path: &Path) -> MineResult<PathBuf> {
         }
     }
     let mut resolved = cursor.canonicalize()?;
+    if !resolved.is_dir() {
+        return Err(refusal(
+            "registered worktree path has a non-directory ancestor",
+        ));
+    }
     for component in missing.into_iter().rev() {
         resolved.push(component);
     }

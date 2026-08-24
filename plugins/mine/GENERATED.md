@@ -34,5 +34,5 @@ root to the MCP server.
 
 ## Version
 
-The plugin version (`0.1.11`) is sourced from the MINE repository version
+The plugin version (`0.1.12`) is sourced from the MINE repository version
 (`.mine/config.toml` `mine_code_version`), the single version source of truth.

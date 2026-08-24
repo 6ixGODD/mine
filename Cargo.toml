@@ -1,6 +1,6 @@
 [package]
 name = "mine"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 rust-version = "1.85"
 description = "MINE Is Not Everyone's: deterministic engineering-workflow core for Claude Code, Codex, Pi, and OpenCode"
