@@ -378,7 +378,21 @@ impl<'a> PlanService<'a> {
                     "registered worktree path changed during preparation",
                 ));
             }
-            git::add_worktree(root, &revalidated_target, &node.branch)?;
+            if let Err(add_error) = git::add_worktree(root, &revalidated_target, &node.branch) {
+                // Git versions differ in whether a failed `worktree add`
+                // preserves an existing branch. Keep the failure evidence
+                // deterministic and recoverable on every platform.
+                if !git::branch_exists(root, &node.branch) {
+                    git::create_branch(root, &node.branch, &initial_head).map_err(
+                        |recovery_error| {
+                            refusal(format!(
+                                "worktree creation failed ({add_error}); branch recovery failed ({recovery_error})"
+                            ))
+                        },
+                    )?;
+                }
+                return Err(add_error);
+            }
             "created"
         };
         let lookup = self.show_with_locations(id, caller_root)?;
