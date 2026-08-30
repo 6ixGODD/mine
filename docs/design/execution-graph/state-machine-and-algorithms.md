@@ -170,7 +170,7 @@ pass and never alters non-`DRAFT` nodes.
 
 ## Validation
 
-Validation includes unique IDs/paths, valid predecessors, acyclic hard dependencies, legal states, required files/evidence, valid design anchors, safe paths, generated-view revision parity, and branch/workspace consistency.
+Validation includes unique IDs/paths, valid predecessors, acyclic hard dependencies, legal states, required files/evidence, valid design anchors, safe paths, generated-view byte parity against a fresh deterministic render (distinguishing machine-source failure from stale-view drift), and branch/workspace consistency.
 
 ## Derived readiness
 

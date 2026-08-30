@@ -16,6 +16,26 @@ docs/plan/execution-graph.md
 
 Markdown is never a mutation target.
 
+## Generated view contract
+
+`docs/plan/execution-graph.md` is a deterministic render of the machine TOML.
+The renderer is the single writer; the view is never edited.
+
+- Dependency edges render as real edges. Hard and soft dependencies stay
+  distinguishable, and every rendered edge corresponds to an actual
+  predecessor entry on a node.
+- Topological order, when shown, renders as an ordered enumeration explicitly
+  labeled as one legal execution order (numbered or comma-separated). Arrows
+  (`->`) denote dependency edges only; the view must never arrow-join plans
+  that merely happen to be adjacent in a topological sort, because readers
+  would mistake sort adjacency for a hard dependency that contradicts the
+  predecessor table and the real DAG.
+- `mine graph validate` compares the on-disk view against a fresh
+  deterministic render of the TOML. Findings distinguish an invalid machine
+  source from a stale generated view; the stale-view finding names
+  `mine graph render` as the non-destructive repair. Validation never
+  rewrites either file.
+
 ## Why TOML
 
 TOML is readable, diffable, branch-aware, and simple to parse. SQLite and binary formats are rejected because the graph is small, workspace-scoped, and Git-reviewable.

@@ -67,9 +67,23 @@ atomically links both records only after the replacement is approved.
 The CLI exposes JSON/human adapters over one ADR service:
 
 ```text
-mine adr add|show|list|propose|approve|reject|supersede|validate
+mine adr add|show|list|propose|approve|reject|supersede [--dry-run]|validate
 mine design readiness [--scope <scope>]
+mine design render
 ```
+
+`mine adr supersede --dry-run` previews the post-change readiness for every
+scope the superseded entry applies to without writing the registry or index.
+There is deliberately no `unsupersede` or registry restore command: reversal
+stays forward-only through a new ADR and `supersede`, preserving
+terminal-status and digest-bound immutability.
+
+`mine design render` deterministically regenerates
+`docs/design/decisions/index.md` from the registry, repairing drift after an
+interrupted or externally disturbed write. `mine adr validate` distinguishes
+an invalid machine registry from a stale generated index and names
+`mine design render` as the non-destructive repair; validation itself never
+rewrites files.
 
 Read-only MCP tools are:
 
@@ -113,8 +127,19 @@ approved decision may update detailed leaves without a new ADR.
 
 `mine design readiness --scope <scope>` joins registry state with Design
 validation. It blocks when an applicable planning-blocking ADR is DRAFT,
-PROPOSED, REJECTED without an approved replacement, SUPERSEDED without a valid
-approved replacement, missing, unsafe, or digest-mismatched.
+PROPOSED, REJECTED, missing, unsafe, or digest-mismatched.
+
+A `SUPERSEDED` entry is satisfied only when following `superseded_by`
+transitively reaches an `APPROVED` entry that still applies to the requested
+scope. Superseding a decision with an equal-scope approved replacement must
+never reduce readiness: correctly maintained replacement chains stay
+planning-ready. The chain blocks when its terminal is missing (structure
+validation fails closed), is not `APPROVED`, or is scoped outside the
+requested scope (the replacement does not carry the decision for that scope).
+Blocking reasons name the chain (for example `superseded by ADR-NNNN ...`) so
+the failing link is auditable. The transition table makes supersession cycles
+unreachable; structure validation still refuses dangling or non-reciprocal
+supersession links.
 
 `mine-plan-create` must call readiness for its explicit scope and cite the
 approved ADRs plus exact detailed leaves. Plan registration/release repeats the

@@ -13,3 +13,5 @@
 - [ADR-0009: Keep Detailed-Design Coverage Project-Specific](0009-project-specific-detailed-design-readiness.md) — `APPROVED`
 - [ADR-0010: Persist the Plan Branch Anchor at Start](0010-persist-plan-branch-anchor-at-start.md) — `APPROVED`
 - [ADR-0011: Reject Infeasible In-Progress Plans Without Faking Implementation](0011-reject-infeasible-in-progress-plans.md) — `APPROVED`
+- [ADR-0012: Withdraw Unstarted Plans Through a WITHDRAWN Terminal State](0012-withdraw-unstarted-plans.md) — `PROPOSED`
+- [ADR-0013: Persist an Explicit Planning Scope on Every Plan Node](0013-explicit-planning-scope-binding.md) — `PROPOSED`

@@ -25,7 +25,7 @@ mine workspace open|status|close
 mine graph validate|render|status|ready|wave|show|repair-provenance
 mine plan add|show|prepare|start|implemented|accept|reject|release|rewire-compensation
 mine adr add|show|list|propose|approve|reject|supersede|validate
-mine design backup|validate|status
+mine design backup|validate|status|render
 mine design readiness
 mine repository version show|suggest|set
 mine agent config|install|uninstall|status
@@ -36,7 +36,11 @@ mine mcp serve
 ```
 
 These names are the current `0.1.10` stable contract. Skills and documentation
-are regenerated from this contract before release.
+are regenerated from this contract before release. Two accepted target
+additions land in the next release: `mine design render` (deterministic
+regeneration of the ADR decisions index) and
+`mine adr supersede --dry-run` (post-supersession readiness preview without
+writing).
 
 ## Machine-level vs repository-level commands
 
@@ -178,7 +182,17 @@ authority transitions; illegal transitions or digest drift write nothing.
 
 `mine design readiness [--scope <scope>]` combines Design validation and
 applicable planning-blocking ADR state. It returns `ready`, blocking ADR DTOs,
-digest mismatches, unresolved scopes, and registry revision.
+digest mismatches, unresolved scopes, and registry revision. A `SUPERSEDED`
+entry is satisfied only when its `superseded_by` chain transitively reaches an
+`APPROVED` entry that still applies to the requested scope; superseding with an
+equal-scope approved replacement never reduces readiness.
+
+`mine adr supersede --dry-run` previews post-supersession readiness for every
+affected scope without writing; there is no `unsupersede` (reversal stays
+forward-only through a new ADR and `supersede`). `mine design render`
+deterministically regenerates `docs/design/decisions/index.md` from the
+registry; `mine adr validate` distinguishes an invalid registry from a stale
+generated index and names the repair.
 
 ## Design backup
 
