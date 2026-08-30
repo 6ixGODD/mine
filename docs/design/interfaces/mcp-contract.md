@@ -12,7 +12,8 @@ stdin/stdout carry protocol messages only. Diagnostics go to stderr and local fi
 
 ## Tool design
 
-The current server exposes exactly 17 focused tools:
+The server exposes 17 focused tools today; the accepted ADR-0012 addition
+raises this to 18 in the next release:
 
 - `mine_workspace_status`;
 - `mine_graph_validate`;
@@ -26,6 +27,7 @@ The current server exposes exactly 17 focused tools:
 - `mine_plan_mark_implemented`;
 - `mine_plan_accept`;
 - `mine_plan_reject`;
+- `mine_plan_withdraw`;
 - `mine_design_validate`;
 - `mine_adr_show`;
 - `mine_adr_list`;
@@ -45,6 +47,11 @@ atomically records `branch_anchor` with `IN_PROGRESS`. `mine_plan_reject`
 accepts the canonical `review_report` path in addition to reason and next
 compensation ID; it supports the evidence-bound `IN_PROGRESS -> REJECTED` edge
 without adding another MCP tool or arbitrary status mutation.
+`mine_plan_withdraw(id, reason)` is the ADR-0012 parity tool for
+`mine plan withdraw`: it retires an unstarted plan (`DRAFT`/`BLOCKED`/`READY`)
+with a recorded reason, performs the same provably-lossless Git cleanup checks,
+and adds no arbitrary status mutation. `mine_plan_add` gains the optional
+`planning_scope` argument recorded on the node (ADR-0013).
 
 `mine_graph_repair_provenance(expected_revision)` exposes the same bounded,
 revision-checked schema-v1/v2 recovery as

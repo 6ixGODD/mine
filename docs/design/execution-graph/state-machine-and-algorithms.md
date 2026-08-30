@@ -10,6 +10,7 @@ IN_PROGRESS
 IMPLEMENTED
 ACCEPTED
 REJECTED
+WITHDRAWN
 ```
 
 ## Allowed transitions
@@ -18,8 +19,11 @@ REJECTED
 |---|---|---|
 | DRAFT | BLOCKED | Plan registered but one or more hard predecessors not yet accepted; `mine plan release` or automatic successor release inside `mine plan accept` |
 | DRAFT | READY | Plan complete and every hard predecessor accepted; `mine plan release` or automatic successor release inside `mine plan accept` |
+| DRAFT | WITHDRAWN | Owner-authorized retirement before start; `mine plan withdraw` (ADR-0012) |
 | BLOCKED | READY | All blocking conditions resolved (automatic successor release inside `mine plan accept`, or the blocker's own acceptance) |
+| BLOCKED | WITHDRAWN | Owner-authorized retirement before start; `mine plan withdraw` (ADR-0012) |
 | READY | IN_PROGRESS | Successful start, owner assigned, revision matches |
+| READY | WITHDRAWN | Owner-authorized retirement before start; `mine plan withdraw` (ADR-0012) |
 | IN_PROGRESS | IMPLEMENTED | Report and commit evidence registered |
 | IN_PROGRESS | REJECTED | Independent evidence proves the immutable Plan infeasible or materially invalid; canonical review report and compensation recorded |
 | IMPLEMENTED | ACCEPTED | Independent review passes every hard contract |
@@ -30,6 +34,11 @@ re-statused; repository evidence confirms this (the bootstrap-era rejected
 Plan `02` stayed `REJECTED` after its compensating Plan `02-1` was accepted).
 The earlier `REJECTED -> BLOCKED` row is removed as misleading historical
 baggage: it implied a status transition that no operation performs.
+
+`WITHDRAWN` is **terminal** (ADR-0012). A withdrawn plan is never revived,
+re-statused, or re-registered under the same id. Unlike `REJECTED`, it carries
+no compensation obligation and does not block workspace closure; its hard
+successors remain unsatisfied until explicitly withdrawn or re-planned.
 
 Closing a rejection has two independent parts, both performed through the
 accepted CLI; neither changes the rejected plan's status:
@@ -168,6 +177,70 @@ registered `DRAFT` plan (no accepted upstream) could not previously become
 executable. `mine plan release` never weakens `mine plan accept`'s release
 pass and never alters non-`DRAFT` nodes.
 
+## Plan withdrawal
+
+`mine plan withdraw --id <plan-id> --reason <non-empty>` retires an unstarted
+plan (ADR-0012). It is the truthful exit for registrations that will never
+execute — for example after an approved architecture replacement — so stale
+nodes leave the active graph through a normal operation instead of graph
+hand-edits.
+
+### Preconditions (all checked under the graph lock, atomically)
+
+1. The plan exists and its current status is exactly `DRAFT`, `BLOCKED`, or
+   `READY`. Any other status (including `WITHDRAWN` itself) fails with
+   `MINE_INVALID_TRANSITION` and mutates nothing.
+2. The reason is non-empty.
+3. The graph's current revision matches the caller-supplied expectation
+   (optimistic concurrency), per the shared `save_with_revision` transaction.
+4. Git evidence is either absent or provably lossless:
+   - `DRAFT`/`BLOCKED` nodes must carry no registered branch/worktree
+     artifacts; any such evidence fails as inconsistent state;
+   - a `READY` node with a registered branch/worktree is withdrawable only
+     when, for a base plan, the branch tip equals or is an ancestor of the
+     current integration branch tip, or for a compensation, equals its
+     rejected predecessor's preserved tip exactly, and the linked worktree is
+     clean. Diverged tips, a dirty worktree, or missing Git evidence fail
+     with a typed refusal: unique work may exist and belongs to the
+     evidence-bound rejection path or owner investigation.
+
+### Mutation
+
+- Remove a provably lossless linked worktree and delete the never-started
+  `plan/*` branch under MINE's standing branch authorization; perform no Git
+  operation when no artifacts exist.
+- Record `WITHDRAWN`, the withdraw reason, and UTC timestamp on the node in
+  one revision through the shared transaction path. No review report, owner
+  reassignment, or compensation plan is written.
+
+### Successor and closure semantics
+
+- Successors listing the withdrawn plan as a hard predecessor remain
+  unsatisfied forever; they must be withdrawn or re-planned explicitly. No
+  automatic rewiring or replacement substitution exists; soft references are
+  informational only.
+- Workspace closure treats `WITHDRAWN` as retired; only `REJECTED` requires a
+  compensation chain before closure.
+
+### Idempotency and result
+
+Withdrawal is not idempotent-success: re-running on a `WITHDRAWN` node returns
+`MINE_INVALID_TRANSITION` and writes nothing, matching `mine plan release`.
+The JSON envelope reports `command: "plan.withdraw"`, `revision_before` /
+`revision_after` (`revision_after == revision_before + 1`), and
+`data.plan`, `data.status_before`, `data.status_after`, `data.withdrawn_at`,
+and `data.cleaned_git_artifacts` (boolean).
+
+### Stability errors
+
+- `MINE_PLAN_NOT_FOUND`: plan id absent.
+- `MINE_INVALID_TRANSITION`: current status is not `DRAFT`/`BLOCKED`/`READY`.
+- `MINE_GRAPH_INVALID`: inconsistent registered Git artifacts on an unstarted
+  node.
+- `MINE_GIT_EVIDENCE` class failure: diverged tip, dirty worktree, or missing
+  Git object refusing lossless cleanup.
+- `MINE_REVISION_CONFLICT` / `MINE_LOCK_TIMEOUT`: shared transactional checks.
+
 ## Validation
 
 Validation includes unique IDs/paths, valid predecessors, acyclic hard dependencies, legal states, required files/evidence, valid design anchors, safe paths, generated-view byte parity against a fresh deterministic render (distinguishing machine-source failure from stale-view drift), and branch/workspace consistency.
@@ -281,7 +354,7 @@ A wave is a stable maximal set of ready plans without ancestor relationships, ex
 Closure requires:
 
 - every terminal implementation node accepted;
-- no unresolved draft, blocked, ready, in-progress, implemented, or rejected node;
+- no unresolved draft, blocked, ready, in-progress, implemented, or rejected node; withdrawn nodes are retired and do not block closure (ADR-0012);
 - final full `mine-sync` attestation not blocked;
 - release verification passes;
 - current branch is managed `dev`;

@@ -143,6 +143,13 @@ accepted, in the same accept transaction. `mine plan release` covers the
 standalone case (a newly registered `DRAFT` plan with no pending accepted
 upstream), which the accept pass cannot reach.
 
+An unstarted plan (`DRAFT`/`BLOCKED`/`READY`) that will never execute — for
+example after its architecture was replaced by an approved decision — is
+retired through `mine plan withdraw` (ADR-0012): terminal `WITHDRAWN`, reason
+and timestamp recorded, provably-lossless cleanup of a prepared-but-unstarted
+lane, no compensation semantics. Withdrawn nodes do not block workspace
+closure; successors referencing them are explicitly withdrawn or re-planned.
+
 ## During development
 
 - Design changes precede plans.

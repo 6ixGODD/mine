@@ -51,6 +51,8 @@ Each `PlanNode` contains:
 - exclusive, read-only, and reserved shared paths;
 - implementation and review report paths;
 - implementation commits;
+- `planning_scope`: non-empty scope recorded at registration (ADR-0013), defaulting to the configured design root; immutable afterwards. With `readiness_checked_at` and `adr_registry_revision` — recorded by `mine plan release` when it re-runs planning readiness for that scope — it binds the node to the approved ADR decision set it was planned against;
+- `withdraw_reason` and `withdrawn_at`: recorded by `mine plan withdraw` (ADR-0012); empty unless the node is `WITHDRAWN`;
 - owner, run ID, timestamps, rejection, and compensation metadata. The
   `compensating_plan` field is set by `mine plan reject` and names the
   registered replacement plan that downstream successors are rewired onto via
@@ -64,8 +66,9 @@ not persisted graph facts. Commands launched from any linked checkout resolve
 and mutate the one authoritative graph in the main integration worktree.
 
 For schema-v3 canonical nodes, `branch_anchor` is empty only in `DRAFT`,
-`BLOCKED`, and `READY`. `IN_PROGRESS`, `IMPLEMENTED`, `ACCEPTED`, and
-`REJECTED` nodes require a non-empty value that Git resolves to a commit. The
+`BLOCKED`, `READY`, and `WITHDRAWN` (a withdrawn node never started).
+`IN_PROGRESS`, `IMPLEMENTED`, `ACCEPTED`, and `REJECTED` nodes require a
+non-empty value that Git resolves to a commit. The
 stored object ID is repository-native and is never validated by assuming a
 fixed SHA-1 or SHA-256 string length. `READY -> IN_PROGRESS` records it in the
 same graph transaction as owner/run/timestamp evidence. Later lifecycle writes

@@ -23,7 +23,7 @@ mine status
 mine doctor
 mine workspace open|status|close
 mine graph validate|render|status|ready|wave|show|repair-provenance
-mine plan add|show|prepare|start|implemented|accept|reject|release|rewire-compensation
+mine plan add|show|prepare|start|implemented|accept|reject|release|rewire-compensation|withdraw
 mine adr add|show|list|propose|approve|reject|supersede|validate
 mine design backup|validate|status|render
 mine design readiness
@@ -36,11 +36,10 @@ mine mcp serve
 ```
 
 These names are the current `0.1.10` stable contract. Skills and documentation
-are regenerated from this contract before release. Two accepted target
-additions land in the next release: `mine design render` (deterministic
-regeneration of the ADR decisions index) and
-`mine adr supersede --dry-run` (post-supersession readiness preview without
-writing).
+are regenerated from this contract before release. Four accepted target
+additions land in the next release: `mine plan withdraw` (ADR-0012),
+`--planning-scope` on `mine plan add` plus the release-time readiness re-check
+(ADR-0013), `mine design render`, and `mine adr supersede --dry-run`.
 
 ## Machine-level vs repository-level commands
 
@@ -245,6 +244,15 @@ Errors use the same envelope with `ok: false`, stable `error.code`, human messag
 
 Exact values become public contract when released.
 
+## Plan registration scope
+
+`mine plan add [--planning-scope <scope>]` records the node's planning scope
+(ADR-0013). When omitted, the node records the configured design root
+directory (for this repository, `docs/design`) — the fail-safe superset under
+which every design-path-scoped ADR applies. The scope is immutable afterwards
+and is exposed by `mine plan show`. Registration requires planning readiness
+for the recorded scope; the former lineage-id scope derivation is removed.
+
 ## Plan release
 
 `mine plan release --id <plan-id>` moves a newly registered plan from `DRAFT`
@@ -256,10 +264,16 @@ for the full algorithm.
 
 - Accepts only a `DRAFT` plan; returns `MINE_INVALID_TRANSITION` for any other
   status and mutates nothing.
+- Re-runs planning readiness for the node's persisted `planning_scope`
+  (ADR-0013) before transitioning; a blocked readiness fails with the blocking
+  ADR DTOs and writes nothing. On success the node records
+  `readiness_checked_at` and the satisfied `adr_registry_revision` as audit
+  evidence.
 - Transitions `DRAFT -> READY` when every hard predecessor is `ACCEPTED`
   (including a plan with no hard predecessors); transitions `DRAFT -> BLOCKED`
   when one or more hard predecessors are not yet `ACCEPTED`.
-- Never alters `IN_PROGRESS`/`IMPLEMENTED`/`ACCEPTED`/`REJECTED` plans.
+- Never alters `IN_PROGRESS`/`IMPLEMENTED`/`ACCEPTED`/`REJECTED`/`WITHDRAWN`
+  plans.
 - Goes through the shared transaction (`lock -> reload -> revision check ->
   semantic validation -> mutation -> atomic write -> deterministic render`);
   every successful release increments the graph revision exactly once.
@@ -285,6 +299,24 @@ for the full algorithm.
 
 Errors reuse stable `MINE_*` codes (`MINE_PLAN_NOT_FOUND`,
 `MINE_INVALID_TRANSITION`, `MINE_REVISION_CONFLICT`, `MINE_LOCK_TIMEOUT`).
+
+## Plan withdrawal
+
+`mine plan withdraw --id <plan-id> --reason <reason>` retires an unstarted
+plan (`DRAFT`/`BLOCKED`/`READY`) into terminal `WITHDRAWN` (ADR-0012). See
+`docs/design/execution-graph/state-machine-and-algorithms.md#plan-withdrawal`
+for the full algorithm, preconditions, and Git-cleanup proofs.
+
+- Requires a non-empty reason; never accepts a review report or compensating
+  plan (withdrawal closes registration, not execution).
+- Performs provably-lossless cleanup when a prepared-but-unstarted
+  branch/worktree exists (base: tip equals or is an ancestor of the
+  integration branch tip; compensation: tip equals the rejected predecessor's
+  preserved tip; worktree clean) and refuses with typed errors otherwise.
+- Withdrawn hard predecessors keep successors unsatisfied; withdrawn nodes
+  never block workspace closure and are never revived.
+- Not idempotent-success: re-running returns `MINE_INVALID_TRANSITION` and
+  writes nothing.
 
 ## Compensation rewiring
 

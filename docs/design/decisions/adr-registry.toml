@@ -1,5 +1,5 @@
 schema_version = 1
-revision = 11
+revision = 13
 
 [[adrs]]
 id = "ADR-0001"
@@ -192,32 +192,32 @@ updated_at = "2026-08-23T20:38:07.2970005Z"
 id = "ADR-0012"
 path = "docs/design/decisions/0012-withdraw-unstarted-plans.md"
 title = "Withdraw Unstarted Plans Through a WITHDRAWN Terminal State"
-status = "PROPOSED"
+status = "APPROVED"
 planning_blocking = true
 planning_scopes = ["docs/design/execution-graph", "docs/design/governance", "docs/design/interfaces", "docs/design/integrations"]
 content_sha256 = "64121BBD36C317CA28F32EF9EE5DD3635BCA96828D7EB35BF5C81B196DAE92A4"
 proposed_at = "2026-08-30T20:34:20.8495582Z"
-approved_by = ""
-approved_at = ""
-approval_note = ""
+approved_by = "repository-owner"
+approved_at = "2026-08-30T20:40:09.6590715Z"
+approval_note = "Repository owner replied 全部批准 to approve ADR-0012 and ADR-0013 in the current review turn."
 supersedes = []
 superseded_by = ""
 rejection_reason = ""
-updated_at = "2026-08-30T20:34:20.8495582Z"
+updated_at = "2026-08-30T20:40:09.6590715Z"
 
 [[adrs]]
 id = "ADR-0013"
 path = "docs/design/decisions/0013-explicit-planning-scope-binding.md"
 title = "Persist an Explicit Planning Scope on Every Plan Node"
-status = "PROPOSED"
+status = "APPROVED"
 planning_blocking = true
 planning_scopes = ["docs/design/execution-graph", "docs/design/governance", "docs/design/interfaces", "docs/design/integrations"]
 content_sha256 = "EB5F627941DD940305C1D9F8640800E0655E36EA1B4194D6863B41699F86081C"
 proposed_at = "2026-08-30T20:34:27.6063308Z"
-approved_by = ""
-approved_at = ""
-approval_note = ""
+approved_by = "repository-owner"
+approved_at = "2026-08-30T20:40:10.0347801Z"
+approval_note = "Repository owner replied 全部批准 to approve ADR-0012 and ADR-0013 in the current review turn."
 supersedes = []
 superseded_by = ""
 rejection_reason = ""
-updated_at = "2026-08-30T20:34:27.6063308Z"
+updated_at = "2026-08-30T20:40:10.0347801Z"
