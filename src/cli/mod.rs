@@ -344,6 +344,7 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
                 v.push("--hard".to_string());
                 v.push(h.clone());
             }
+            push_opt(&mut v, "planning-scope", a.planning_scope.as_deref());
             ("plan", "add", v, "plan.add")
         }
         PlanCmd::Show(a) => {
@@ -397,6 +398,12 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
             push_opt(&mut v, "id", Some(&a.id));
             ("plan", "rewire-compensation", v, "plan.rewire-compensation")
         }
+        PlanCmd::Withdraw(a) => {
+            let mut v = Vec::new();
+            push_opt(&mut v, "id", Some(&a.id));
+            push_opt(&mut v, "reason", Some(&a.reason));
+            ("plan", "withdraw", v, "plan.withdraw")
+        }
     }
 }
 
@@ -405,6 +412,7 @@ fn design_route(a: &DesignCmd) -> (&'static str, &'static str, Vec<String>, &'st
         DesignCmd::Backup => ("design", "backup", vec![], "design.backup"),
         DesignCmd::Validate => ("design", "validate", vec![], "design.validate"),
         DesignCmd::Status => ("design", "status", vec![], "design.status"),
+        DesignCmd::Render => ("design", "render", vec![], "design.render"),
         DesignCmd::Readiness { scope } => {
             let mut v = Vec::new();
             push_opt(&mut v, "scope", scope.as_deref());
@@ -469,17 +477,16 @@ fn adr_route(a: &AdrCmd) -> (&'static str, &'static str, Vec<String>, &'static s
             ],
             "adr.reject",
         ),
-        AdrCmd::Supersede(a) => (
-            "adr",
-            "supersede",
-            vec![
+        AdrCmd::Supersede(a) => {
+            let mut v = vec![
                 "--id".to_string(),
                 a.id.clone(),
                 "--replacement".to_string(),
                 a.replacement.clone(),
-            ],
-            "adr.supersede",
-        ),
+            ];
+            push_bool(&mut v, "dry-run", a.dry_run);
+            ("adr", "supersede", v, "adr.supersede")
+        }
         AdrCmd::Validate => ("adr", "validate", vec![], "adr.validate"),
     }
 }

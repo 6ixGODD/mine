@@ -94,6 +94,20 @@ impl DesignService {
             design_root: config.design.root.clone(),
         })
     }
+
+    /// Returns the default planning scope for plan registration (ADR-0013):
+    /// the parent directory of the configured design root index (for this
+    /// repository, `docs/design`) — the fail-safe superset under which every
+    /// design-path-scoped ADR applies.
+    #[must_use]
+    pub fn default_planning_scope(config: &MineConfig) -> String {
+        let root = config.design.root.replace('\\', "/");
+        std::path::Path::new(root.trim_start_matches('/'))
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| "docs/design".to_string())
+    }
 }
 
 /// Design status DTO (CLI-only `mine design status`; MCP exposes only validate).

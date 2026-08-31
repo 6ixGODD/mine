@@ -35,11 +35,12 @@ mine release
 mine mcp serve
 ```
 
-These names are the current `0.1.10` stable contract. Skills and documentation
-are regenerated from this contract before release. Four accepted target
-additions land in the next release: `mine plan withdraw` (ADR-0012),
-`--planning-scope` on `mine plan add` plus the release-time readiness re-check
-(ADR-0013), `mine design render`, and `mine adr supersede --dry-run`.
+These names are the current stable contract; Skills and documentation are
+regenerated from it before release. The `v0.1.13` lifecycle-completeness
+release shipped the four formerly planned additions: `mine plan withdraw`
+(ADR-0012), `--planning-scope` on `mine plan add` plus the release-time
+readiness re-check (ADR-0013), `mine design render`, and
+`mine adr supersede --dry-run`.
 
 ## Machine-level vs repository-level commands
 
@@ -159,7 +160,9 @@ operation allowed to read a supported older graph without first passing current
 graph validation. Under the authoritative Root graph lock, it checks the
 expected revision, derives missing canonical branch/lineage/worktree metadata
 for v1 and `branch_anchor` for v2, refuses conflicting non-empty values, and
-upgrades to fail-closed `mine-graph-v3`.
+upgrades to fail-closed `mine-graph-v4`. A `mine-graph-v3` graph needs no
+derivation (the v4 fields are optional with defaults) and upgrades as a
+version-only migration.
 
 Anchor derivation is limited to the validated first parent of the first ordered
 implementation commit, or an active compensation's exact declared rejected-
@@ -167,7 +170,8 @@ predecessor tip when no implementation commits exist. Git objects, commit
 ordering, declared lineage, and ancestry to observed tip are verified.
 Ambiguous active base Plans and inconsistent evidence write nothing. A real
 migration increments revision once and renders Markdown; repeating against
-valid v3 is idempotent byte-preserving success with no revision increment.
+the current schema is idempotent byte-preserving success with no revision
+increment.
 Unsupported schemas, revision conflicts, unsafe paths, missing objects, and
 inconsistent provenance write nothing.
 

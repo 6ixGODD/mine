@@ -2,7 +2,7 @@
 #![forbid(unsafe_code)]
 
 //! Real MCP subprocess discovery: spawn `mine mcp serve` as a real subprocess,
-//! initialize the MCP client, and verify exactly seventeen tools are exposed.
+//! initialize the MCP client, and verify exactly eighteen tools are exposed.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -12,7 +12,7 @@ fn mine_bin() -> PathBuf {
 }
 
 #[test]
-fn mcp_serve_exposes_exactly_seventeen_tools() {
+fn mcp_serve_exposes_exactly_eighteen_tools() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut child = std::process::Command::new(mine_bin())
         .arg("mcp")
@@ -50,7 +50,7 @@ fn mcp_serve_exposes_exactly_seventeen_tools() {
     let parsed: serde_json::Value = serde_json::from_str(tools_line).expect("valid JSON-RPC");
     assert!(parsed.get("jsonrpc").is_some(), "jsonrpc field present");
     let tools = parsed["result"]["tools"].as_array().expect("tools array");
-    assert_eq!(tools.len(), 17, "exactly 17 MCP tools exposed");
+    assert_eq!(tools.len(), 18, "exactly 18 MCP tools exposed");
     let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
     for expected in [
         "mine_workspace_status",
@@ -70,6 +70,7 @@ fn mcp_serve_exposes_exactly_seventeen_tools() {
         "mine_plan_mark_implemented",
         "mine_plan_accept",
         "mine_plan_reject",
+        "mine_plan_withdraw",
     ] {
         assert!(
             names.contains(&expected),

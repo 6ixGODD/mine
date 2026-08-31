@@ -32,7 +32,7 @@ pub const FIVE_SKILLS: &[&str] = &[
     "mine-sync",
 ];
 
-/// The twelve accepted MCP tool names exposed by `mine mcp serve`.
+/// The eighteen accepted MCP tool names exposed by `mine mcp serve`.
 pub const ACCEPTED_MCP_TOOLS: &[&str] = &[
     "mine_workspace_status",
     "mine_graph_validate",
@@ -50,6 +50,7 @@ pub const ACCEPTED_MCP_TOOLS: &[&str] = &[
     "mine_plan_mark_implemented",
     "mine_plan_accept",
     "mine_plan_reject",
+    "mine_plan_withdraw",
 ];
 
 /// Reads a file as a string, panicking on failure.

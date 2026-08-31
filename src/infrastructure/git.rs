@@ -2,8 +2,13 @@
 //!
 //! `docs/design/interfaces/cli-contract.md` and the branch-and-plan-lifecycle
 //! design require MINE to inspect repository Git state. MINE never commits,
-//! merges, resets, cleans, stashes, rebases, pushes, or deletes branches. The
-//! only mutations here are fixed-argument branch/worktree preparation calls.
+//! merges, resets, cleans, stashes, rebases, pushes, or force-pushes. The only
+//! mutations here are fixed-argument branch/worktree preparation calls and the
+//! provably-lossless cleanup of a never-started `plan/*` lane performed by
+//! `mine plan withdraw` (ADR-0012 owner-authorized retirement): a clean
+//! linked worktree removal (`git worktree remove`, never `--force`) and a
+//! branch delete (`git branch -d`, or `-D` only after an exact-tip proof for a
+//! compensation lane).
 //!
 //! To adhere to "no arbitrary shell execution" (no `sh -c`), every query
 //! invokes `git` directly as a controlled subprocess with an explicit,
@@ -91,6 +96,24 @@ pub fn add_worktree(repo_root: &Path, path: &Path, branch: &str) -> MineResult<(
 /// Switches a clean linked checkout to an existing branch.
 pub fn switch_branch(worktree: &Path, branch: &str) -> MineResult<()> {
     run_git_mutation(worktree, &["switch", branch])
+}
+
+/// Removes a linked worktree without force. Refuses a dirty worktree (Git
+/// itself fails), so unique uncommitted work can never be discarded here.
+pub fn remove_worktree(repo_root: &Path, path: &Path) -> MineResult<()> {
+    let path = path.to_str().ok_or_else(|| MineError::GraphInvalid {
+        detail: "worktree path is not valid UTF-8".to_string(),
+    })?;
+    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    run_git_mutation(repo_root, &["worktree", "remove", path])
+}
+
+/// Deletes a local branch. `force = false` uses `git branch -d`, which
+/// succeeds only when the branch is fully merged; `force = true` uses `-D`
+/// and must be preceded by an exact-tip proof by the caller.
+pub fn delete_branch(repo_root: &Path, branch: &str, force: bool) -> MineResult<()> {
+    let flag = if force { "-D" } else { "-d" };
+    run_git_mutation(repo_root, &["branch", flag, branch])
 }
 
 /// Parses Git's stable NUL-delimited worktree inventory. The first record is
@@ -470,5 +493,107 @@ mod tests {
         let (authority, caller) = authority_and_caller_root(&linked).unwrap();
         assert_eq!(authority, dir.path().canonicalize().unwrap());
         assert_eq!(caller, linked.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn remove_worktree_and_delete_branch_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let linked = dir.path().join("lane");
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            .args(["worktree", "add", "--quiet", "-b", "plan/plan09-lane"])
+            .arg(&linked)
+            .status()
+            .unwrap();
+        assert!(linked.exists());
+
+        // Removing a clean linked worktree succeeds and unregisters it.
+        remove_worktree(dir.path(), &linked).unwrap();
+        assert!(!linked.exists());
+        assert!(
+            list_worktrees(dir.path())
+                .unwrap()
+                .iter()
+                .all(|w| !w.path.contains("lane"))
+        );
+
+        // `-d` deletes a branch merged into HEAD.
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        assert!(branch_exists(dir.path(), "plan/plan09-lane"));
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        delete_branch(dir.path(), "plan/plan09-lane", false).unwrap();
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        assert!(!branch_exists(dir.path(), "plan/plan09-lane"));
+    }
+
+    #[test]
+    fn remove_worktree_refuses_dirty_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        let linked = dir.path().join("dirty lane");
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            .args(["worktree", "add", "--quiet", "-b", "plan/plan08-dirty"])
+            .arg(&linked)
+            .status()
+            .unwrap();
+        std::fs::write(linked.join("scratch.txt"), "uncommitted\n").unwrap();
+        assert!(remove_worktree(dir.path(), &linked).is_err());
+        assert!(linked.exists(), "dirty worktree is preserved");
+    }
+
+    #[test]
+    fn delete_branch_minus_d_refuses_unmerged_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        init_repo(dir.path());
+        // Unique commit on a side branch: `-d` must refuse, `-D` deletes.
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+            .args(["switch", "--quiet", "-c", "plan/plan07-unique"])
+            .status()
+            .unwrap();
+        std::fs::write(dir.path().join("unique.txt"), "unique\n").unwrap();
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            .args(["add", "unique.txt"])
+            .status()
+            .unwrap();
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            .args(["commit", "--quiet", "-m", "unique"])
+            .status()
+            .unwrap();
+        Command::new(GIT)
+            .arg("-C")
+            .arg(dir.path())
+            .args(["switch", "--quiet", "master"])
+            .status()
+            .unwrap();
+        if !branch_exists(dir.path(), "master") {
+            // The default branch name varies across git versions.
+            Command::new(GIT)
+                .arg("-C")
+                .arg(dir.path())
+                .args(["switch", "--quiet", "main"])
+                .status()
+                .unwrap();
+        }
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        assert!(delete_branch(dir.path(), "plan/plan07-unique", false).is_err());
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        assert!(branch_exists(dir.path(), "plan/plan07-unique"));
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        delete_branch(dir.path(), "plan/plan07-unique", true).unwrap();
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        assert!(!branch_exists(dir.path(), "plan/plan07-unique"));
     }
 }

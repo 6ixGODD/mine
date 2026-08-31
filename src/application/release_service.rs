@@ -145,8 +145,18 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
     // 4. Design validates.
     let design_valid = validate_design(repo_root);
 
-    // 5. Graph renders consistently (TOML matches MD).
-    let graph_valid = store.load().is_ok() && store.render().is_ok();
+    // 5. Graph renders consistently (TOML matches MD). Read-only byte
+    //    parity against a fresh deterministic render: preflight never
+    //    rewrites the view (`mine graph render` is the repair).
+    let graph_valid = match store.load() {
+        Ok(ws) => match crate::infrastructure::toml_store::render_markdown(&ws) {
+            Ok(expected) => std::fs::read(store.md_path())
+                .map(|bytes| bytes == expected.as_bytes())
+                .unwrap_or(false),
+            Err(_) => false,
+        },
+        Err(_) => false,
+    };
 
     // 6. Distribution parity is NOT a generic release gate. Per the accepted
     //    Design (docs/design/integrations/distribution.md -> "Repository

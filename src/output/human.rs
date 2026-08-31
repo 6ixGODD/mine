@@ -141,6 +141,7 @@ pub fn status_report(repo_root: &std::path::Path, ws: Option<&PlanWorkspace>) ->
                     PlanStatus::Implemented => "implemented",
                     PlanStatus::Accepted => "accepted",
                     PlanStatus::Rejected => "rejected",
+                    PlanStatus::Withdrawn => "withdrawn",
                 };
                 *counts.entry(key).or_insert(0) += 1;
             }

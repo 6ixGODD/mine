@@ -203,7 +203,7 @@ async fn shutdown(client: RunningService<RoleClient, ()>) {
 }
 
 #[tokio::test]
-async fn lists_all_seventeen_tools_with_schemas() {
+async fn lists_all_eighteen_tools_with_schemas() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
     let client = connect(repo).await;
@@ -231,11 +231,12 @@ async fn lists_all_seventeen_tools_with_schemas() {
         "mine_plan_mark_implemented",
         "mine_plan_accept",
         "mine_plan_reject",
+        "mine_plan_withdraw",
     ];
     for e in expected {
         assert!(names.contains(&e), "missing tool {e}; got {names:?}");
     }
-    assert_eq!(names.len(), 17, "exactly 17 tools; got {names:?}");
+    assert_eq!(names.len(), 18, "exactly 18 tools; got {names:?}");
     for t in &tools {
         assert!(
             !t.input_schema.is_empty(),
@@ -509,6 +510,56 @@ async fn plan_lifecycle_start_implemented_accept() {
 }
 
 #[tokio::test]
+async fn plan_add_records_explicit_planning_scope() {
+    let before = live_graph_bytes();
+    let (tmp, repo) = start_fixture();
+    let client = connect(repo.clone()).await;
+    // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
+    std::fs::write(
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        repo.join("docs/plan/plan04-fixture.md"),
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        "# plan04
+",
+    )
+    .unwrap();
+    let added = call_tool(
+        &client,
+        "mine_plan_add",
+        json!({
+            // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
+            "id": "plan04",
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            "path": "docs/plan/plan04-fixture.md",
+            "title": "scoped fixture",
+            "design_references": ["docs/design/index.md"],
+            "planning_scope": "docs/design/execution-graph"
+        }),
+    )
+    .await;
+    assert_eq!(
+        added.get("ok").and_then(|o| o.as_bool()),
+        Some(true),
+        "add result: {added}"
+    );
+    // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
+    let shown = call_tool(&client, "mine_plan_show", json!({ "id": "plan04" })).await;
+    let plan = shown
+        .get("data")
+        .and_then(|d| d.get("plan"))
+        .expect("data.plan");
+    assert_eq!(
+        plan.get("planning_scope").and_then(|s| s.as_str()),
+        Some("docs/design/execution-graph"),
+        "explicit planning scope recorded: {plan}"
+    );
+
+    shutdown(client).await;
+    drop(tmp);
+    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+}
+
+#[tokio::test]
 async fn plan_reject_in_progress_with_review_evidence() {
     let before = live_graph_bytes();
     let (tmp, repo) = start_fixture();
@@ -574,6 +625,105 @@ async fn plan_reject_in_progress_with_review_evidence() {
         plan.get("implementation_report")
             .and_then(|value| value.as_str())
             .is_some_and(str::is_empty)
+    );
+
+    shutdown(client).await;
+    drop(tmp);
+    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+}
+
+#[tokio::test]
+async fn plan_withdraw_retires_prepared_ready_plan() {
+    let before = live_graph_bytes();
+    let (tmp, repo) = start_fixture();
+    // mine-release-allow-plan-reference: plan-id lifecycle fixture
+    // The fixture prepared plan02's lane at the integration tip, so the
+    // withdrawal must clean up the never-started branch/worktree losslessly.
+    // mine-release-allow-plan-reference: MCP withdrawal Plan fixture
+    let worktree = repo.join(".mine/worktrees/plan02");
+    assert!(worktree.exists(), "fixture prepared the linked worktree");
+    let client = connect(repo.clone()).await;
+
+    let withdrawn = call_tool(
+        &client,
+        "mine_plan_withdraw",
+        json!({
+            // mine-release-allow-plan-reference: MCP withdrawal Plan fixture
+            "id": "plan02",
+            "reason": "stale after architecture replacement"
+        }),
+    )
+    .await;
+    assert_eq!(
+        withdrawn.get("ok").and_then(|o| o.as_bool()),
+        Some(true),
+        "withdraw result: {withdrawn}"
+    );
+    assert_eq!(
+        withdrawn.get("command").and_then(|c| c.as_str()),
+        Some("plan.withdraw")
+    );
+    assert_eq!(
+        withdrawn
+            .get("data")
+            .and_then(|d| d.get("status_after"))
+            .and_then(|s| s.as_str()),
+        Some("WITHDRAWN")
+    );
+    assert_eq!(
+        withdrawn
+            .get("data")
+            .and_then(|d| d.get("cleaned_git_artifacts"))
+            .and_then(|c| c.as_bool()),
+        Some(true),
+        "prepared lane cleaned: {withdrawn}"
+    );
+    // The never-started branch/worktree are gone.
+    assert!(!worktree.exists(), "linked worktree removed");
+    let branch_list = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&repo)
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        .args(["branch", "--list", "plan/plan02*"])
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&branch_list.stdout)
+            .trim()
+            .is_empty(),
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        "plan02 branch deleted"
+    );
+
+    // mine-release-allow-plan-reference: MCP withdrawal Plan fixture
+    let shown = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
+    let plan = shown
+        .get("data")
+        .and_then(|d| d.get("plan"))
+        .expect("data.plan");
+    assert_eq!(
+        plan.get("status").and_then(|s| s.as_str()),
+        Some("WITHDRAWN")
+    );
+    assert_eq!(
+        plan.get("withdraw_reason").and_then(|r| r.as_str()),
+        Some("stale after architecture replacement")
+    );
+
+    // Withdrawal is not idempotent-success: re-running is a stable refusal.
+    let rerun = call_tool(
+        &client,
+        "mine_plan_withdraw",
+        json!({
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            "id": "plan02",
+            "reason": "again"
+        }),
+    )
+    .await;
+    assert!(
+        rerun.get("ok").and_then(|o| o.as_bool()).is_none_or(|v| !v),
+        "re-run refused: {rerun}"
     );
 
     shutdown(client).await;

@@ -1,7 +1,7 @@
 ---
 name: mine-plan-exec
 description: Execute one repository implementation plan end to end in its MINE-prepared linked worktree. Use when the user invokes mine-plan-exec with a plan ID or file, asks to implement a governed plan, or wants dependency checks, code changes, verification, reporting, commits, and graph updates. Never implement directly on stable or dev.
-version: 0.1.12
+version: 0.1.13
 ---
 
 # MINE Plan Execute

@@ -1,7 +1,7 @@
 ---
 name: mine-arch
 description: Create or overhaul a repository's modular architecture source of truth rooted at docs/design/index.md and initialize the repository's engineering governance. Use for new projects, weak or stale architecture, major boundary changes, or repository setup. Inspects real code and requirements, performs mandatory official-documentation research, designs abstract architecture before detailed design, applies SOLID without speculative abstraction, creates or repairs language-specific formatter/linter/type/test/CI configuration, establishes durable AGENTS.md rules, and validates the resulting quality gates.
-version: 0.1.12
+version: 0.1.13
 ---
 
 # MINE Architecture
@@ -72,6 +72,10 @@ The accepted MCP tools `mine-arch` may use:
   `compensating_plan`) - only for the bounded, evidence-backed rejection of
   an objectively infeasible `IN_PROGRESS` Plan after the replacement ADR is
   approved.
+- `mine_plan_withdraw` (`id`, `reason`) - owner-authorized retirement of an
+  unstarted (`DRAFT`/`BLOCKED`/`READY`) registration made stale by an
+  approved architecture replacement (ADR-0012). It performs the same
+  provably-lossless Git cleanup checks as `mine plan withdraw`.
 
 Operations `mine-arch` needs that are intentionally **CLI-only** (no MCP tool
 exposes them, because they initialize local environment or are one-shot
@@ -112,6 +116,16 @@ with that report, a non-empty reason, and the next canonical sibling
 compensation ID. It never fabricates implementation evidence, performs a
 generic status change, rewires arbitrary successors, or resumes the stopped
 implementation.
+
+Unstarted registrations (`DRAFT`/`BLOCKED`/`READY`) made stale by an approved
+architecture replacement are retired through the owner-authorized withdrawal
+instead: `mine plan withdraw --id <exact-stored-id> --reason <non-empty
+reason> --format json` (MCP: `mine_plan_withdraw`). Withdrawal closes
+registration, not execution: it never accepts a review report or compensation
+plan, refuses diverged or dirty Git evidence, and leaves the withdrawn node's
+successors unsatisfied until they are themselves withdrawn or re-planned.
+Withdrawal is never a way to erase started history: a Plan that has started
+(`IN_PROGRESS` or later) keeps its evidence-bound rejection path.
 
 ## MINE execution-graph integration
 

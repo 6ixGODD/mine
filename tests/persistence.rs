@@ -63,6 +63,11 @@ fn sample_workspace(rev: u64) -> PlanWorkspace {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            withdraw_reason: String::new(),
+            withdrawn_at: String::new(),
+            planning_scope: String::new(),
+            readiness_checked_at: String::new(),
+            adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
         }],
@@ -139,8 +144,9 @@ fn save_with_revision_renders_markdown_with_parity() {
     assert!(md.contains("Revision: `1`"));
     assert!(md.contains("IN_PROGRESS"));
 
-    // Revision parity validation passes.
-    mine::domain::validation::validate_revision_parity(1, Some(1)).unwrap();
+    // Byte parity validation passes through the graph service.
+    let svc = mine::application::graph_service::GraphService::new(&store);
+    svc.validate().unwrap();
 }
 
 #[test]
@@ -195,6 +201,56 @@ fn concurrent_writers_do_not_silently_overwrite() {
     let after = store.load().unwrap();
     assert_eq!(after.plans[0].title, "writer-1");
     assert_eq!(after.revision, 1);
+}
+
+#[test]
+fn v3_graph_upgrades_implicitly_on_next_mutation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = TomlStore::new(dir.path());
+    // Seed a v3 graph (the pre-v4 wire schema without the optional node
+    // fields).
+    let mut ws = sample_workspace(0);
+    ws.schema_version = mine::domain::graph::PREVIOUS_GRAPH_SCHEMA_VERSION;
+    std::fs::create_dir_all(store.toml_path().parent().unwrap()).unwrap();
+    std::fs::write(store.toml_path(), toml::to_string(&ws).unwrap()).unwrap();
+
+    // The loader accepts v3 read-only.
+    let loaded = store.load().unwrap();
+    assert_eq!(
+        loaded.schema_version,
+        mine::domain::graph::PREVIOUS_GRAPH_SCHEMA_VERSION
+    );
+
+    // The next lifecycle mutation upgrades the wire schema implicitly (the
+    // revision bumps once for the mutation itself, not for the schema).
+    store
+        .save_with_revision(0, |mut w| {
+            w.revision = 1;
+            w.plans[0].status = PlanStatus::Withdrawn;
+            w.plans[0].withdraw_reason = "retired".to_string();
+            w.plans[0].withdrawn_at = "2026-08-31T00:00:00Z".to_string();
+            Ok(w)
+        })
+        .unwrap();
+    let text = std::fs::read_to_string(store.toml_path()).unwrap();
+    assert!(
+        text.starts_with(
+            "schema_version = \"mine-graph-v4\"
+"
+        ),
+        "{text}"
+    );
+    let upgraded = store.load().unwrap();
+    assert_eq!(
+        upgraded.schema_version,
+        mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION
+    );
+    assert_eq!(upgraded.revision, 1);
+
+    // Newer, unsupported schemas stay fail-closed.
+    let newer = text.replace("mine-graph-v4", "mine-graph-v5");
+    std::fs::write(store.toml_path(), newer).unwrap();
+    assert!(store.load().is_err());
 }
 
 #[test]

@@ -23,8 +23,8 @@ use std::time::Duration;
 use crate::domain::config::MineConfig;
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::{
-    CURRENT_GRAPH_SCHEMA_VERSION, LEGACY_GRAPH_SCHEMA_VERSION, PREVIOUS_GRAPH_SCHEMA_VERSION,
-    PlanWorkspace,
+    ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION, CURRENT_GRAPH_SCHEMA_VERSION, LEGACY_GRAPH_SCHEMA_VERSION,
+    PREVIOUS_GRAPH_SCHEMA_VERSION, PlanWorkspace,
 };
 use crate::domain::path::normalize_repo_relative;
 use crate::domain::plan_id::{CanonicalPlanId, is_exact_bootstrap_node, registered_plan_branch};
@@ -164,7 +164,11 @@ impl TomlStore {
             });
         }
 
-        let new_ws = mutate(reloaded)?;
+        let mut new_ws = mutate(reloaded)?;
+        // The writer always emits the current schema: a v3 graph upgrades
+        // implicitly here (the v4 fields are optional with defaults), so the
+        // schema bump rides the mutation's own revision increment.
+        new_ws.schema_version = CURRENT_GRAPH_SCHEMA_VERSION;
         validate_persisted_workspace(&new_ws, &worktrees_root, &self.repo_root)?;
 
         let toml_content = toml::to_string(&new_ws).map_err(|e| MineError::GraphInvalid {
@@ -191,12 +195,15 @@ impl TomlStore {
         Ok(reloaded_for_render)
     }
 
-    /// Repairs a supported schema-v1/v2 graph under the graph lock and upgrades
-    /// it to the fail-closed v3 wire format. This is the only write path that
-    /// may parse a legacy graph without first passing current validation.
+    /// Repairs a supported legacy schema graph under the graph lock and
+    /// upgrades it to the fail-closed current wire format. This is the only
+    /// write path that may parse a legacy graph without first passing current
+    /// validation.
     ///
-    /// Repeating the operation against an already-valid v3 graph is an
-    /// idempotent success with no revision bump and no file rewrite.
+    /// v1/v2 graphs run the provenance migration; a v3 graph needs no field
+    /// derivation and upgrades to the current schema as a version-only
+    /// migration. Repeating the operation against an already-current graph is
+    /// an idempotent success with no revision bump and no file rewrite.
     pub fn repair_provenance_with_revision(
         &self,
         expected_revision: u64,
@@ -226,20 +233,25 @@ impl TomlStore {
                 repaired_plans: Vec::new(),
             });
         }
-        if !matches!(
+        let revision_before = workspace.revision;
+        let repaired_plans = if workspace.schema_version == PREVIOUS_GRAPH_SCHEMA_VERSION {
+            // Version-only upgrade: the v4 fields are optional with defaults,
+            // so nothing is derived.
+            validate_persisted_workspace(&workspace, &worktrees_root, &self.repo_root)?;
+            Vec::new()
+        } else if matches!(
             workspace.schema_version,
-            LEGACY_GRAPH_SCHEMA_VERSION | PREVIOUS_GRAPH_SCHEMA_VERSION
+            LEGACY_GRAPH_SCHEMA_VERSION | ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION
         ) {
+            migrate_provenance(&mut workspace, &worktrees_root, &self.repo_root)?
+        } else {
             return Err(MineError::GraphInvalid {
                 detail: format!(
                     "unsupported execution-graph schema version {}; no migration is registered",
                     workspace.schema_version
                 ),
             });
-        }
-
-        let revision_before = workspace.revision;
-        let repaired_plans = migrate_provenance(&mut workspace, &worktrees_root, &self.repo_root)?;
+        };
         workspace.schema_version = CURRENT_GRAPH_SCHEMA_VERSION;
         workspace.revision = revision_before + 1;
         validate_persisted_workspace(&workspace, &worktrees_root, &self.repo_root)?;
@@ -370,6 +382,7 @@ fn migrate_provenance(
             crate::domain::status::PlanStatus::Draft
                 | crate::domain::status::PlanStatus::Blocked
                 | crate::domain::status::PlanStatus::Ready
+                | crate::domain::status::PlanStatus::Withdrawn
         ) {
             if !node.branch_anchor.is_empty() {
                 return Err(MineError::GraphInvalid {
@@ -567,17 +580,78 @@ pub fn render_markdown(ws: &PlanWorkspace) -> MineResult<String> {
         })?;
     }
 
-    // Topology section.
-    let order = validation::topological_sort(ws)?;
-    out.push_str("\n## Topology\n\n```text\n");
-    if order.is_empty() {
-        out.push_str("(no plans)\n");
-    } else {
-        writeln!(out, "{}", order.join(" -> ")).map_err(|e| MineError::GraphInvalid {
-            detail: format!("markdown write failed: {e}"),
-        })?;
+    // Dependencies section: every rendered edge corresponds to an actual
+    // predecessor entry on a node. Arrows denote dependency edges ONLY; they
+    // never join plans that merely happen to be adjacent in a topological
+    // sort. Lines are sorted by successor id, then predecessor list order
+    // (hard entries before soft entries, each in list order).
+    out.push_str(
+        "
+## Dependencies
+
+```text
+",
+    );
+    let mut successors: Vec<&crate::domain::graph::PlanNode> = ws.plans.iter().collect();
+    successors.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut edge_count = 0usize;
+    for successor in successors {
+        let hard: Vec<String> = successor
+            .hard_predecessors
+            .iter()
+            .map(|pred| format!("{pred} -> {} (hard)", successor.id))
+            .collect();
+        let soft: Vec<String> = successor
+            .soft_predecessors
+            .iter()
+            .map(|pred| format!("{pred} -> {} (soft)", successor.id))
+            .collect();
+        for line in hard.iter().chain(soft.iter()) {
+            writeln!(out, "{line}").map_err(|e| MineError::GraphInvalid {
+                detail: format!("markdown write failed: {e}"),
+            })?;
+            edge_count += 1;
+        }
     }
-    out.push_str("```\n");
+    if edge_count == 0 {
+        out.push_str(
+            "(no dependencies)
+",
+        );
+    }
+    out.push_str(
+        "```
+",
+    );
+
+    // Execution order: the topological sort rendered as a numbered
+    // enumeration explicitly labeled as one legal execution order.
+    let order = validation::topological_sort(ws)?;
+    out.push_str(
+        "
+## Execution order
+
+One legal execution order:
+
+```text
+",
+    );
+    if order.is_empty() {
+        out.push_str(
+            "(no plans)
+",
+        );
+    } else {
+        for (index, id) in order.iter().enumerate() {
+            writeln!(out, "{}. {id}", index + 1).map_err(|e| MineError::GraphInvalid {
+                detail: format!("markdown write failed: {e}"),
+            })?;
+        }
+    }
+    out.push_str(
+        "```
+",
+    );
 
     Ok(out)
 }
@@ -622,6 +696,11 @@ mod tests {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                withdraw_reason: String::new(),
+                withdrawn_at: String::new(),
+                planning_scope: String::new(),
+                readiness_checked_at: String::new(),
+                adr_registry_revision: 0,
                 lineage_id: String::new(),
                 worktree_path: String::new(),
             }],

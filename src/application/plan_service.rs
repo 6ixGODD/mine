@@ -35,6 +35,117 @@ fn refusal(detail: impl Into<String>) -> MineError {
     }
 }
 
+fn git_evidence(plan_id: &str, detail: impl Into<String>) -> MineError {
+    MineError::GitEvidence {
+        plan_id: plan_id.to_string(),
+        detail: detail.into(),
+    }
+}
+
+/// Provably-lossless Git cleanup for withdrawing an unstarted plan
+/// (ADR-0012). All evidence is verified before any Git mutation:
+/// - `DRAFT`/`BLOCKED` must have no Git artifacts at all (an unstarted
+///   registration with a live branch/worktree is inconsistent state);
+/// - a `READY` base plan's branch tip must equal or be an ancestor of the
+///   integration branch tip, then the clean linked worktree (if attached) is
+///   removed and the branch deleted with `-d`;
+/// - a `READY` compensation's tip must equal its rejected predecessor's
+///   preserved tip exactly, then cleanup deletes with `-D` after that proof;
+/// - a `READY` node that was never prepared (no branch, no worktree) needs no
+///   Git operation at all.
+///
+/// Returns whether Git artifacts were removed.
+fn withdraw_cleanup(workspace: &PlanWorkspace, node: &PlanNode, root: &Path) -> MineResult<bool> {
+    // Legacy fixture nodes carry no canonical provenance.
+    if node.branch.is_empty() && node.worktree_path.is_empty() {
+        return Ok(false);
+    }
+    let inventory = git::list_worktrees(root)?;
+    let attached = inventory
+        .iter()
+        .skip(1)
+        .find(|worktree| same_path(&worktree.path, &root.join(&node.worktree_path)));
+    let branch_exists = git::branch_exists(root, &node.branch);
+    match node.status {
+        PlanStatus::Draft | PlanStatus::Blocked => {
+            if branch_exists || attached.is_some() {
+                return Err(refusal(format!(
+                    "plan {} in status {} has existing Git artifacts (branch/worktree); inconsistent state",
+                    node.id,
+                    node.status.as_str()
+                )));
+            }
+            Ok(false)
+        }
+        PlanStatus::Ready => {
+            if !branch_exists && attached.is_none() {
+                return Ok(false);
+            }
+            if !branch_exists {
+                return Err(git_evidence(
+                    &node.id,
+                    "registered branch is missing while a worktree is attached",
+                ));
+            }
+            let tip = git::head_of_branch(root, &node.branch)?;
+            let force_delete = if CanonicalPlanId::parse(&node.id)?.is_compensation() {
+                let predecessor = workspace
+                    .plans
+                    .iter()
+                    .find(|candidate| {
+                        candidate.compensating_plan == node.id
+                            && candidate.status == PlanStatus::Rejected
+                            && candidate.lineage_id == node.lineage_id
+                    })
+                    .ok_or_else(|| {
+                        refusal("compensation is not declared by a rejected predecessor")
+                    })?;
+                validate_compensation_replacement(&predecessor.id, &node.id)?;
+                let preserved = git::head_of_branch(root, &predecessor.branch)?;
+                if tip != preserved {
+                    return Err(git_evidence(
+                        &node.id,
+                        format!(
+                            "branch tip {tip} does not equal the rejected predecessor's preserved tip {preserved}"
+                        ),
+                    ));
+                }
+                true
+            } else {
+                let integration_tip = git::head_of_branch(root, &workspace.integration_branch)?;
+                if tip != integration_tip
+                    && !git::is_ancestor_checked(root, &tip, &integration_tip)?
+                {
+                    return Err(git_evidence(
+                        &node.id,
+                        format!(
+                            "branch tip {tip} diverged from integration branch {}",
+                            workspace.integration_branch
+                        ),
+                    ));
+                }
+                false
+            };
+            if let Some(observed) = attached {
+                if observed.branch.as_deref() != Some(node.branch.as_str()) {
+                    return Err(git_evidence(
+                        &node.id,
+                        "registered worktree is checked out on a different branch",
+                    ));
+                }
+                let worktree_path = Path::new(&observed.path);
+                if !git::is_clean(worktree_path) {
+                    return Err(git_evidence(&node.id, "linked worktree is dirty"));
+                }
+                git::remove_worktree(root, worktree_path)?;
+            }
+            git::delete_branch(root, &node.branch, force_delete)?;
+            Ok(true)
+        }
+        _ => unreachable!("withdraw gate restricts to unstarted statuses"),
+    }
+}
+
 fn same_path(observed: &str, target: &Path) -> bool {
     PathBuf::from(observed)
         .canonicalize()
@@ -432,6 +543,15 @@ impl<'a> PlanService<'a> {
                     detail: format!("plan id {} already exists", req.id),
                 });
             }
+            // The planning scope is recorded verbatim (ADR-0013) but must be
+            // a non-empty, safe repository-relative scope.
+            if req.planning_scope.trim().is_empty() {
+                return Err(MineError::GraphInvalid {
+                    detail: format!("plan {} requires a non-empty planning scope", req.id),
+                });
+            }
+            crate::domain::path::normalize_repo_relative(&req.planning_scope)?;
+            let planning_scope = req.planning_scope.clone();
             let (branch, lineage_id, worktree_path) =
                 if w.workspace_id == "bootstrap-mine-v1" && !req.id.starts_with("plan") {
                     crate::domain::path::normalize_repo_relative(&req.path)?;
@@ -487,6 +607,11 @@ impl<'a> PlanService<'a> {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                withdraw_reason: String::new(),
+                withdrawn_at: String::new(),
+                planning_scope,
+                readiness_checked_at: String::new(),
+                adr_registry_revision: 0,
                 lineage_id,
                 worktree_path,
             };
@@ -685,6 +810,9 @@ impl<'a> PlanService<'a> {
 pub struct PlanReleaseRequest {
     pub id: String,
     pub updated_at: String,
+    /// ADR-0013 release-time readiness re-check evidence for the node's
+    /// planning scope (computed by the CLI adapter before the transaction).
+    pub readiness_audit: crate::domain::plan_release::ReleaseReadinessAudit,
 }
 
 /// A request to rewire downstream successors off a REJECTED plan onto its
@@ -695,15 +823,103 @@ pub struct PlanRewireRequest {
     pub updated_at: String,
 }
 
+/// A request to withdraw an unstarted plan into terminal `WITHDRAWN`
+/// (ADR-0012; shared by CLI and MCP).
+#[derive(Debug, Clone)]
+pub struct PlanWithdrawRequest {
+    pub id: String,
+    pub reason: String,
+    pub withdrawn_at: String,
+}
+
+/// Deterministic withdrawal outcome shared by the CLI envelope and the MCP
+/// `mine_plan_withdraw` tool.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PlanWithdrawal {
+    pub id: String,
+    pub status_before: String,
+    pub status_after: String,
+    pub withdrawn_at: String,
+    pub cleaned_git_artifacts: bool,
+}
+
 impl<'a> PlanService<'a> {
+    /// Withdraws an unstarted plan (`DRAFT`/`BLOCKED`/`READY`) into terminal
+    /// `WITHDRAWN` (ADR-0012). Under the store lock: reload, revision check,
+    /// status gate, non-empty reason, provably-lossless Git cleanup (refusing
+    /// typed on diverged/dirty/missing evidence), then one revision recording
+    /// `WITHDRAWN` + reason + timestamp. No review report and no compensation
+    /// are required or accepted. Returns the saved workspace and the
+    /// deterministic withdrawal DTO.
+    pub fn withdraw(
+        &self,
+        req: PlanWithdrawRequest,
+    ) -> MineResult<(PlanWorkspace, PlanWithdrawal)> {
+        let expected = self.graph.validate()?.revision;
+        let root = self.graph.repo_root().to_path_buf();
+        let withdrawal = std::cell::RefCell::new(Option::<PlanWithdrawal>::None);
+        let saved = self.graph.mutate(expected, |mut w| {
+            let current = w
+                .get(&req.id)
+                .cloned()
+                .ok_or_else(|| MineError::PlanNotFound {
+                    plan_id: req.id.clone(),
+                })?;
+            if !matches!(
+                current.status,
+                PlanStatus::Draft | PlanStatus::Blocked | PlanStatus::Ready
+            ) {
+                return Err(MineError::InvalidTransition {
+                    plan_id: req.id.clone(),
+                    from: current.status.as_str().to_string(),
+                    to: PlanStatus::Withdrawn.as_str().to_string(),
+                });
+            }
+            current
+                .status
+                .validate_transition(&req.id, PlanStatus::Withdrawn)?;
+            if req.reason.trim().is_empty() {
+                return Err(MineError::GraphInvalid {
+                    detail: "withdrawal requires a non-empty reason".to_string(),
+                });
+            }
+            let cleaned = withdraw_cleanup(&w, &current, &root)?;
+            let node = w.get_mut(&req.id).expect("checked present above");
+            node.status = PlanStatus::Withdrawn;
+            node.withdraw_reason = req.reason.clone();
+            node.withdrawn_at = req.withdrawn_at.clone();
+            node.updated_at = req.withdrawn_at.clone();
+            w.revision = expected + 1;
+            *withdrawal.borrow_mut() = Some(PlanWithdrawal {
+                id: req.id.clone(),
+                status_before: current.status.as_str().to_string(),
+                status_after: PlanStatus::Withdrawn.as_str().to_string(),
+                withdrawn_at: req.withdrawn_at.clone(),
+                cleaned_git_artifacts: cleaned,
+            });
+            Ok(w)
+        })?;
+        Ok((
+            saved,
+            withdrawal
+                .into_inner()
+                .expect("withdrawal DTO set on success"),
+        ))
+    }
+
     /// Releases a `DRAFT` plan: `DRAFT -> READY` when every hard predecessor is
     /// `ACCEPTED` (incl. no preds), else `DRAFT -> BLOCKED`. Returns the saved
     /// workspace and the unsatisfied predecessors (in stable order) for
     /// deterministic reporting.
     pub fn release(&self, req: PlanReleaseRequest) -> MineResult<PlanWorkspace> {
         let expected = self.graph.validate()?.revision;
-        self.graph.mutate(expected, move |mut w| {
-            crate::domain::plan_release::release_plan(&mut w, &req.id, &req.updated_at)?;
+        self.graph.mutate(expected, |mut w| {
+            crate::domain::plan_release::release_plan(
+                &mut w,
+                &req.id,
+                &req.updated_at,
+                Some(&req.readiness_audit),
+            )?;
             w.revision = expected + 1;
             Ok(w)
         })

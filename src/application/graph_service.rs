@@ -11,7 +11,7 @@
 //! recheck revision, one domain transition, atomic TOML write, deterministic
 //! Markdown render, release lock.
 
-use crate::domain::error::MineResult;
+use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::PlanWorkspace;
 use crate::domain::validation;
 use crate::infrastructure::toml_store::{ProvenanceRepairOutcome, TomlStore};
@@ -28,14 +28,36 @@ impl<'a> GraphService<'a> {
         Self { store }
     }
 
-    /// Loads the workspace and runs full structural validation (`mine graph
-    /// validate`).
+    /// Loads the workspace and runs full structural validation plus
+    /// generated-view byte parity (`mine graph validate`).
+    ///
+    /// After the machine TOML validates, the on-disk generated view is
+    /// compared byte-for-byte against a fresh deterministic render. A stale,
+    /// hand-edited, or missing view is a validation failure whose detail
+    /// names `mine graph render` as the non-destructive repair; validation
+    /// itself never rewrites either file.
     ///
     /// # Errors
-    /// Propagates [`crate::domain::error::MineError::GraphNotInitialized`] when no graph exists or
-    /// `MineError::GraphInvalid`/`GraphCycle` on validation failure.
+    /// Propagates [`crate::domain::error::MineError::GraphNotInitialized`] when no graph exists,
+    /// `MineError::GraphInvalid`/`GraphCycle` on machine-source validation
+    /// failure, and `MineError::GraphInvalid` on generated-view drift.
     pub fn validate(&self) -> MineResult<PlanWorkspace> {
-        self.store.load()
+        let ws = self.store.load()?;
+        let expected = crate::infrastructure::toml_store::render_markdown(&ws)?;
+        let view = self.store.md_path().display().to_string();
+        match std::fs::read(self.store.md_path()) {
+            Ok(bytes) if bytes == expected.as_bytes() => Ok(ws),
+            Ok(_) => Err(MineError::GraphInvalid {
+                detail: format!(
+                    "generated view stale: {view} does not match a fresh render (run `mine graph render` to repair)"
+                ),
+            }),
+            Err(_) => Err(MineError::GraphInvalid {
+                detail: format!(
+                    "generated view missing: {view} (run `mine graph render` to repair)"
+                ),
+            }),
+        }
     }
 
     /// Returns the loaded workspace (revision, identity, frontier). Read-only.
@@ -161,6 +183,9 @@ pub struct PlanAddRequest {
     pub design_references: Vec<String>,
     pub exclusive_write_paths: Vec<String>,
     pub hard_predecessors: Vec<String>,
+    /// Non-empty planning scope recorded on the node (ADR-0013). The adapter
+    /// resolves the explicit value or the configured design-root default.
+    pub planning_scope: String,
 }
 
 #[cfg(test)]
@@ -217,6 +242,11 @@ mod tests {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                withdraw_reason: String::new(),
+                withdrawn_at: String::new(),
+                planning_scope: String::new(),
+                readiness_checked_at: String::new(),
+                adr_registry_revision: 0,
                 lineage_id: String::new(),
                 worktree_path: String::new(),
             }],

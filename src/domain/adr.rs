@@ -80,6 +80,15 @@ pub struct AdrEntry {
     pub updated_at: String,
 }
 
+/// One unresolved planning-readiness blocker with a chain-named reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdrBlocker {
+    pub id: String,
+    pub status: String,
+    pub path: String,
+    pub reason: String,
+}
+
 /// The ADR registry fact source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdrRegistry {
@@ -270,20 +279,76 @@ impl AdrRegistry {
         Ok(())
     }
 
-    /// Returns blocking entries applicable to the requested scope.
+    /// Returns the unresolved planning blockers for the requested scope with
+    /// chain-named reasons.
+    ///
+    /// An applicable planning-blocking entry is satisfied when its status is
+    /// `APPROVED`, or when it is `SUPERSEDED` and following `superseded_by`
+    /// transitively reaches an `APPROVED` entry that still applies to the
+    /// scope. A chain that ends out-of-scope, at a non-approved status, at a
+    /// missing entry, or in a cycle blocks with a reason naming the chain.
     #[must_use]
-    pub fn applicable_blockers(&self, scope: Option<&str>) -> Vec<&AdrEntry> {
+    pub fn readiness_blockers(&self, scope: Option<&str>) -> Vec<AdrBlocker> {
         self.entries
             .iter()
             .filter(|entry| entry.planning_blocking && entry.applies_to(scope))
-            .filter(|entry| entry.status != AdrStatus::APPROVED)
+            .filter_map(|entry| self.resolve_blocker(entry, scope))
             .collect()
     }
 
-    /// Returns whether all applicable blocking ADRs are approved.
+    /// Resolves one entry through its replacement chain; `None` when satisfied.
+    fn resolve_blocker(&self, entry: &AdrEntry, scope: Option<&str>) -> Option<AdrBlocker> {
+        let blocked = |reason: String| {
+            Some(AdrBlocker {
+                id: entry.id.clone(),
+                status: entry.status.as_str().to_string(),
+                path: entry.path.clone(),
+                reason,
+            })
+        };
+        match entry.status {
+            AdrStatus::APPROVED => None,
+            AdrStatus::SUPERSEDED => {
+                let scope_text =
+                    scope.map_or_else(|| "any scope".to_string(), |s| format!("scope {s}"));
+                let mut visited = std::collections::HashSet::new();
+                visited.insert(entry.id.clone());
+                let mut chain = format!("superseded by {}", entry.superseded_by);
+                let mut current = entry;
+                loop {
+                    let next_id = current.superseded_by.clone();
+                    let Some(next) = self.get(&next_id) else {
+                        return blocked(format!("{chain} which does not exist"));
+                    };
+                    if next.status == AdrStatus::APPROVED {
+                        if next.applies_to(scope) {
+                            return None;
+                        }
+                        return blocked(format!("{chain} which does not apply to {scope_text}"));
+                    }
+                    if next.status != AdrStatus::SUPERSEDED {
+                        return blocked(format!(
+                            "{chain} whose chain ends at status {}",
+                            next.status.as_str()
+                        ));
+                    }
+                    if !visited.insert(next_id) {
+                        return blocked(format!("{chain} which contains a cycle"));
+                    }
+                    chain.push_str(" -> ");
+                    chain.push_str(&next.superseded_by);
+                    current = next;
+                }
+            }
+            status => blocked(format!("status is {}", status.as_str())),
+        }
+    }
+
+    /// Returns whether all applicable blocking ADRs are approved or validly
+    /// superseded within the requested scope.
     #[must_use]
     pub fn is_ready(&self, scope: Option<&str>) -> bool {
-        self.applicable_blockers(scope).is_empty()
+        self.readiness_blockers(scope).is_empty()
     }
 
     fn entry_mut(&mut self, id: &str) -> MineResult<&mut AdrEntry> {
@@ -416,6 +481,143 @@ mod tests {
         // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
         assert!(r.is_ready(Some("plan01")));
         assert!(!r.is_ready(Some("other")));
+    }
+
+    fn approve_entry(r: &mut AdrRegistry, id: &str) {
+        let digest = format!("{id}-digest");
+        r.propose(id, digest.clone(), "now").unwrap();
+        r.approve(id, &digest, "owner", "note", "now").unwrap();
+    }
+
+    #[test]
+    fn superseded_by_approved_replacement_same_scope_is_ready() {
+        let mut r = AdrRegistry::empty();
+        r.add(entry("ADR-0001", AdrStatus::DRAFT)).unwrap();
+        approve_entry(&mut r, "ADR-0001");
+        r.add(entry("ADR-0002", AdrStatus::DRAFT)).unwrap();
+        approve_entry(&mut r, "ADR-0002");
+        r.supersede("ADR-0001", "ADR-0002", "now").unwrap();
+        // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
+        assert!(
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            r.is_ready(Some("plan01")),
+            "{:?}",
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            r.readiness_blockers(Some("plan01"))
+        );
+    }
+
+    #[test]
+    fn two_hop_supersession_chain_to_approved_is_ready() {
+        let mut r = AdrRegistry::empty();
+        for id in ["ADR-0001", "ADR-0002", "ADR-0003"] {
+            r.add(entry(id, AdrStatus::DRAFT)).unwrap();
+            approve_entry(&mut r, id);
+        }
+        r.supersede("ADR-0001", "ADR-0002", "now").unwrap();
+        r.supersede("ADR-0002", "ADR-0003", "now").unwrap();
+        assert!(
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            r.is_ready(Some("plan01")),
+            "{:?}",
+            // mine-release-allow-plan-reference: plan-id lifecycle fixture
+            r.readiness_blockers(Some("plan01"))
+        );
+    }
+
+    #[test]
+    fn out_of_scope_replacement_blocks_with_scope_reason() {
+        let mut r = AdrRegistry::empty();
+        let mut global = entry("ADR-0001", AdrStatus::DRAFT);
+        global.planning_scopes = vec![];
+        r.add(global).unwrap();
+        approve_entry(&mut r, "ADR-0001");
+        let mut replacement = entry("ADR-0002", AdrStatus::DRAFT);
+        replacement.planning_scopes = vec!["docs/design/other".to_string()];
+        r.add(replacement).unwrap();
+        approve_entry(&mut r, "ADR-0002");
+        r.supersede("ADR-0001", "ADR-0002", "now").unwrap();
+        let blockers = r.readiness_blockers(Some("docs/design/execution-graph"));
+        assert_eq!(blockers.len(), 1);
+        assert_eq!(blockers[0].id, "ADR-0001");
+        assert_eq!(
+            blockers[0].reason,
+            "superseded by ADR-0002 which does not apply to scope docs/design/execution-graph"
+        );
+        // Without a requested scope nothing is out of scope.
+        assert!(r.is_ready(None));
+    }
+
+    #[test]
+    fn rejected_chain_terminal_blocks_with_chain_reason() {
+        let mut r = AdrRegistry::empty();
+        r.add(entry("ADR-0001", AdrStatus::DRAFT)).unwrap();
+        approve_entry(&mut r, "ADR-0001");
+        r.add(entry("ADR-0002", AdrStatus::DRAFT)).unwrap();
+        r.propose("ADR-0002", "ADR-0002-digest".to_string(), "now")
+            .unwrap();
+        r.reject("ADR-0002", "not wanted", "now").unwrap();
+        // Link ADR-0001 -> rejected ADR-0002 directly; the transition table
+        // cannot produce this, but the resolver must fail closed on it.
+        r.get_mut("ADR-0001").unwrap().status = AdrStatus::SUPERSEDED;
+        r.get_mut("ADR-0001").unwrap().superseded_by = "ADR-0002".to_string();
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        let blockers = r.readiness_blockers(Some("plan01"));
+        let blocker = blockers
+            .iter()
+            .find(|b| b.id == "ADR-0001")
+            .expect("superseded ADR-0001 blocks");
+        assert_eq!(
+            blocker.reason,
+            "superseded by ADR-0002 whose chain ends at status REJECTED"
+        );
+    }
+
+    #[test]
+    fn global_blocking_adr_superseded_by_approved_global_adr_is_ready() {
+        // The milo v0.1.10 field-report shape: a repository-wide blocking ADR
+        // replaced by an approved repository-wide decision must not block.
+        let mut r = AdrRegistry::empty();
+        let mut old = entry("ADR-0010", AdrStatus::DRAFT);
+        old.planning_scopes = vec![];
+        r.add(old).unwrap();
+        approve_entry(&mut r, "ADR-0010");
+        let mut replacement = entry("ADR-0011", AdrStatus::DRAFT);
+        replacement.planning_scopes = vec![];
+        r.add(replacement).unwrap();
+        approve_entry(&mut r, "ADR-0011");
+        r.supersede("ADR-0010", "ADR-0011", "now").unwrap();
+        assert!(r.is_ready(Some("docs/design/execution-graph")));
+        assert!(r.is_ready(None));
+        assert!(r.is_ready(Some("any-scope")));
+    }
+
+    #[test]
+    fn supersession_cycle_blocks_defensively() {
+        let mut r = AdrRegistry::empty();
+        for id in ["ADR-0001", "ADR-0002", "ADR-0003"] {
+            r.add(entry(id, AdrStatus::DRAFT)).unwrap();
+            approve_entry(&mut r, id);
+        }
+        r.get_mut("ADR-0001").unwrap().status = AdrStatus::SUPERSEDED;
+        r.get_mut("ADR-0001").unwrap().superseded_by = "ADR-0002".to_string();
+        r.get_mut("ADR-0002").unwrap().status = AdrStatus::SUPERSEDED;
+        r.get_mut("ADR-0002").unwrap().superseded_by = "ADR-0003".to_string();
+        r.get_mut("ADR-0003").unwrap().status = AdrStatus::SUPERSEDED;
+        r.get_mut("ADR-0003").unwrap().superseded_by = "ADR-0002".to_string();
+        // mine-release-allow-plan-reference: plan-id lifecycle fixture
+        let blockers = r.readiness_blockers(Some("plan01"));
+        for id in ["ADR-0001", "ADR-0002", "ADR-0003"] {
+            let blocker = blockers
+                .iter()
+                .find(|b| b.id == id)
+                .unwrap_or_else(|| panic!("{id} blocks"));
+            assert!(
+                blocker.reason.contains("which contains a cycle"),
+                "{id} reason was {}",
+                blocker.reason
+            );
+        }
     }
 
     #[test]

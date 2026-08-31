@@ -14,6 +14,17 @@ use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::PlanWorkspace;
 use crate::domain::status::PlanStatus;
 
+/// Planning-readiness audit evidence recorded by `mine plan release`
+/// (ADR-0013): the scope the re-check ran for, when, and which ADR registry
+/// revision satisfied it (0 when the repository has no bootstrapped
+/// registry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReleaseReadinessAudit {
+    pub planning_scope: String,
+    pub checked_at: String,
+    pub adr_registry_revision: u64,
+}
+
 /// Releases a `DRAFT` plan into the startable frontier.
 ///
 /// Computes the unsatisfied hard predecessors (those not `ACCEPTED`), in
@@ -22,15 +33,27 @@ use crate::domain::status::PlanStatus;
 ///   hard predecessors);
 /// - `DRAFT -> BLOCKED` otherwise.
 ///
+/// When `audit` is supplied, its scope is persisted on the node (a legacy
+/// node without a recorded scope adopts the resolved value; an existing scope
+/// is immutable and must match) together with `readiness_checked_at` and
+/// `adr_registry_revision` as release-time audit evidence.
+///
 /// The node's `updated_at` is refreshed to `now`. No other node is touched and
 /// the workspace `revision` is not modified here.
 ///
 /// # Errors
 /// - [`MineError::PlanNotFound`] if `plan_id` does not exist.
 /// - [`MineError::InvalidTransition`] if the node is not currently `DRAFT`.
+/// - [`MineError::GraphInvalid`] if the audit scope conflicts with the node's
+///   already-recorded immutable planning scope.
 ///
 /// `ws` is left unmutated on error.
-pub fn release_plan(ws: &mut PlanWorkspace, plan_id: &str, now: &str) -> MineResult<()> {
+pub fn release_plan(
+    ws: &mut PlanWorkspace,
+    plan_id: &str,
+    now: &str,
+    audit: Option<&ReleaseReadinessAudit>,
+) -> MineResult<()> {
     let node = ws.get(plan_id).ok_or_else(|| MineError::PlanNotFound {
         plan_id: plan_id.to_string(),
     })?;
@@ -40,6 +63,21 @@ pub fn release_plan(ws: &mut PlanWorkspace, plan_id: &str, now: &str) -> MineRes
             from: node.status.as_str().to_string(),
             to: PlanStatus::Ready.as_str().to_string(),
         });
+    }
+    if let Some(audit) = audit {
+        if audit.planning_scope.trim().is_empty() {
+            return Err(MineError::GraphInvalid {
+                detail: format!("plan {plan_id} release audit has an empty planning scope"),
+            });
+        }
+        if !node.planning_scope.is_empty() && node.planning_scope != audit.planning_scope {
+            return Err(MineError::GraphInvalid {
+                detail: format!(
+                    "plan {plan_id} planning scope {} is immutable and cannot become {}",
+                    node.planning_scope, audit.planning_scope
+                ),
+            });
+        }
     }
     let hard = node.hard_predecessors.clone();
 
@@ -67,6 +105,13 @@ pub fn release_plan(ws: &mut PlanWorkspace, plan_id: &str, now: &str) -> MineRes
     let node = ws.get_mut(plan_id).expect("checked present above");
     node.status = target;
     node.updated_at = now.to_string();
+    if let Some(audit) = audit {
+        // A legacy node without a recorded scope adopts the resolved value;
+        // an existing scope was verified equal above.
+        node.planning_scope = audit.planning_scope.clone();
+        node.readiness_checked_at = audit.checked_at.clone();
+        node.adr_registry_revision = audit.adr_registry_revision;
+    }
     Ok(())
 }
 
@@ -124,6 +169,11 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            withdraw_reason: String::new(),
+            withdrawn_at: String::new(),
+            planning_scope: String::new(),
+            readiness_checked_at: String::new(),
+            adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
         }
@@ -148,7 +198,7 @@ mod tests {
     #[test]
     fn no_predecessors_draft_becomes_ready() {
         let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
-        release_plan(&mut w, "09", "now").unwrap();
+        release_plan(&mut w, "09", "now", None).unwrap();
         assert_eq!(w.get("09").unwrap().status, PlanStatus::Ready);
         assert_eq!(
             unsatisfied_predecessors(&w, "09").unwrap(),
@@ -163,7 +213,7 @@ mod tests {
             node("03", PlanStatus::Accepted, &[]),
             node("09", PlanStatus::Draft, &["01", "03"]),
         ]);
-        release_plan(&mut w, "09", "now").unwrap();
+        release_plan(&mut w, "09", "now", None).unwrap();
         assert_eq!(w.get("09").unwrap().status, PlanStatus::Ready);
         assert!(unsatisfied_predecessors(&w, "09").unwrap().is_empty());
     }
@@ -175,7 +225,7 @@ mod tests {
             node("02", PlanStatus::Blocked, &["01"]),
             node("09", PlanStatus::Draft, &["01", "02"]),
         ]);
-        release_plan(&mut w, "09", "now").unwrap();
+        release_plan(&mut w, "09", "now", None).unwrap();
         assert_eq!(w.get("09").unwrap().status, PlanStatus::Blocked);
         assert_eq!(
             unsatisfied_predecessors(&w, "09").unwrap(),
@@ -192,10 +242,11 @@ mod tests {
             PlanStatus::Implemented,
             PlanStatus::Accepted,
             PlanStatus::Rejected,
+            PlanStatus::Withdrawn,
         ] {
             let mut w = ws(vec![node("09", status, &[])]);
             let before = w.clone();
-            let err = release_plan(&mut w, "09", "now").unwrap_err();
+            let err = release_plan(&mut w, "09", "now", None).unwrap_err();
             assert_eq!(err.code(), "MINE_INVALID_TRANSITION");
             assert_eq!(w, before, "ws unchanged on rejected release ({status:?})");
         }
@@ -204,28 +255,81 @@ mod tests {
     #[test]
     fn missing_plan_is_not_found() {
         let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
-        let err = release_plan(&mut w, "missing", "now").unwrap_err();
+        let err = release_plan(&mut w, "missing", "now", None).unwrap_err();
         assert_eq!(err.code(), "MINE_PLAN_NOT_FOUND");
     }
 
     #[test]
     fn missing_predecessor_is_not_found() {
         let mut w = ws(vec![node("09", PlanStatus::Draft, &["ghost"])]);
-        let err = release_plan(&mut w, "09", "now").unwrap_err();
+        let err = release_plan(&mut w, "09", "now", None).unwrap_err();
         assert_eq!(err.code(), "MINE_PLAN_NOT_FOUND");
     }
 
     #[test]
     fn release_refreshes_updated_at() {
         let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
-        release_plan(&mut w, "09", "2026-07-24T00:00:00Z").unwrap();
+        release_plan(&mut w, "09", "2026-07-24T00:00:00Z", None).unwrap();
         assert_eq!(w.get("09").unwrap().updated_at, "2026-07-24T00:00:00Z");
     }
 
     #[test]
     fn release_does_not_bump_revision() {
         let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
-        release_plan(&mut w, "09", "now").unwrap();
+        release_plan(&mut w, "09", "now", None).unwrap();
         assert_eq!(w.revision, 5, "release itself does not bump revision");
+    }
+
+    fn audit(scope: &str) -> ReleaseReadinessAudit {
+        ReleaseReadinessAudit {
+            planning_scope: scope.to_string(),
+            checked_at: "2026-08-31T00:00:00Z".to_string(),
+            adr_registry_revision: 13,
+        }
+    }
+
+    #[test]
+    fn release_records_readiness_audit_evidence() {
+        let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
+        release_plan(
+            &mut w,
+            "09",
+            "now",
+            Some(&audit("docs/design/execution-graph")),
+        )
+        .unwrap();
+        let node = w.get("09").unwrap();
+        assert_eq!(node.planning_scope, "docs/design/execution-graph");
+        assert_eq!(node.readiness_checked_at, "2026-08-31T00:00:00Z");
+        assert_eq!(node.adr_registry_revision, 13);
+    }
+
+    #[test]
+    fn release_persists_resolved_scope_on_legacy_node() {
+        // A legacy pre-v4 node has no recorded scope; the release mutation
+        // persists the resolved design-root value.
+        let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
+        assert!(w.get("09").unwrap().planning_scope.is_empty());
+        release_plan(&mut w, "09", "now", Some(&audit("docs/design"))).unwrap();
+        assert_eq!(w.get("09").unwrap().planning_scope, "docs/design");
+    }
+
+    #[test]
+    fn release_refuses_conflicting_scope_and_empty_audit() {
+        let mut scoped = node("09", PlanStatus::Draft, &[]);
+        scoped.planning_scope = "docs/design/execution-graph".to_string();
+        let mut w = ws(vec![scoped]);
+        let before = w.clone();
+        let err = release_plan(&mut w, "09", "now", Some(&audit("docs/design"))).unwrap_err();
+        assert_eq!(err.code(), "MINE_GRAPH_INVALID");
+        assert_eq!(w, before, "ws unchanged on scope conflict");
+
+        let mut w = ws(vec![node("09", PlanStatus::Draft, &[])]);
+        let empty = ReleaseReadinessAudit {
+            planning_scope: String::new(),
+            checked_at: "now".to_string(),
+            adr_registry_revision: 1,
+        };
+        assert!(release_plan(&mut w, "09", "now", Some(&empty)).is_err());
     }
 }

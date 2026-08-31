@@ -189,8 +189,11 @@ fn status_reports_graph_and_git_evidence() {
 }
 
 #[test]
-fn graph_validate_on_development_fixture_parses_and_validates() {
+fn graph_validate_detects_missing_view_and_render_repairs() {
     let tmp = temp_copy_of_real_graph();
+    // Drop the generated view: validation fails naming the non-destructive
+    // repair.
+    std::fs::remove_file(TomlStore::new(tmp.path()).md_path()).unwrap();
     let outcome = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
@@ -198,10 +201,60 @@ fn graph_validate_on_development_fixture_parses_and_validates() {
         ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 0, "real graph must validate");
+    assert_eq!(outcome.exit_code, 4, "missing view is a validation failure");
+    let env = envelope_json(&outcome);
+    let detail = env["error"]["message"].as_str().unwrap();
+    assert!(
+        detail.contains("generated view missing") && detail.contains("mine graph render"),
+        "error names the repair: {detail}"
+    );
+    // The repair is non-destructive: render, then validate passes.
+    let outcome = cli::dispatch(
+        &run(tmp.path().to_str().unwrap(), &["graph", "render"]),
+        "mine",
+    );
+    assert_eq!(outcome.exit_code, 0);
+    let outcome = cli::dispatch(
+        &run(
+            tmp.path().to_str().unwrap(),
+            &["graph", "validate", "--format", "json"],
+        ),
+        "mine",
+    );
+    assert_eq!(
+        outcome.exit_code, 0,
+        "real graph must validate after render"
+    );
     let env = envelope_json(&outcome);
     assert_eq!(env["ok"], true);
     assert!(env["data"]["plans"].as_u64().unwrap() >= 9);
+    // A hand-edited view is detected as stale.
+    let store = TomlStore::new(tmp.path());
+    let md = std::fs::read_to_string(store.md_path()).unwrap();
+    std::fs::write(
+        store.md_path(),
+        format!(
+            "{md}hand-edited
+"
+        ),
+    )
+    .unwrap();
+    let outcome = cli::dispatch(
+        &run(
+            tmp.path().to_str().unwrap(),
+            &["graph", "validate", "--format", "json"],
+        ),
+        "mine",
+    );
+    assert_eq!(outcome.exit_code, 4, "hand-edited view is stale");
+    let env = envelope_json(&outcome);
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("generated view stale"),
+        "stale view distinguished"
+    );
 }
 
 #[test]
@@ -259,6 +312,7 @@ fn temp_copy_of_real_graph() -> tempfile::TempDir {
         tmp.path().join("docs/plan/execution-graph.toml"),
     )
     .unwrap();
+    TomlStore::new(tmp.path()).render().unwrap();
     tmp
 }
 
@@ -369,10 +423,16 @@ fn plan_accept_requires_implemented_state() {
         updated_at: "2026-07-23T00:00:00Z".to_string(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        withdraw_reason: String::new(),
+        withdrawn_at: String::new(),
+        planning_scope: String::new(),
+        readiness_checked_at: String::new(),
+        adr_registry_revision: 0,
         lineage_id: String::new(),
         worktree_path: String::new(),
     });
     std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
+    TomlStore::new(tmp.path()).render().unwrap();
 
     let outcome = cli::dispatch(
         &run(
@@ -449,6 +509,11 @@ fn plan_lifecycle_implemented_accept_releases_successor() {
         updated_at: String::new(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        withdraw_reason: String::new(),
+        withdrawn_at: String::new(),
+        planning_scope: String::new(),
+        readiness_checked_at: String::new(),
+        adr_registry_revision: 0,
         lineage_id: String::new(),
         worktree_path: String::new(),
     };
@@ -463,6 +528,7 @@ fn plan_lifecycle_implemented_accept_releases_successor() {
         vec!["99-lifecycle"],
     ));
     std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
+    TomlStore::new(tmp.path()).render().unwrap();
 
     // 1) implemented: IN_PROGRESS -> IMPLEMENTED.
     let outcome = cli::dispatch(

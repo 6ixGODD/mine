@@ -1,6 +1,6 @@
 //! Plan lifecycle status and state-machine transition rules.
 //!
-//! Implements the seven-state machine from
+//! Implements the eight-state machine from
 //! `docs/design/execution-graph/state-machine-and-algorithms.md`. There is no
 //! generic `set-status`; transitions are validated against the allowed-edge
 //! table and rejected with `MINE_INVALID_TRANSITION` otherwise.
@@ -30,6 +30,8 @@ pub enum PlanStatus {
     Accepted,
     /// Independent review found a material failure.
     Rejected,
+    /// Owner-authorized retirement before start (ADR-0012).
+    Withdrawn,
 }
 
 impl PlanStatus {
@@ -44,14 +46,17 @@ impl PlanStatus {
             Self::Implemented => "IMPLEMENTED",
             Self::Accepted => "ACCEPTED",
             Self::Rejected => "REJECTED",
+            Self::Withdrawn => "WITHDRAWN",
         }
     }
 
-    /// Returns `true` if this status is a terminal state for the node itself
-    /// (ignoring compensation).
+    /// Returns `true` if this status is terminal for the node itself:
+    /// `ACCEPTED`, `REJECTED`, and `WITHDRAWN` are never left. Closure
+    /// semantics are computed separately (a `REJECTED` node additionally
+    /// requires a compensation chain before workspace closure).
     #[must_use]
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Accepted)
+        matches!(self, Self::Accepted | Self::Rejected | Self::Withdrawn)
     }
 
     /// Validates that transitioning from `self` to `target` is an allowed edge
@@ -69,6 +74,9 @@ impl PlanStatus {
             (Self::InProgress, Self::Rejected) => true,
             (Self::Implemented, Self::Accepted) => true,
             (Self::Implemented, Self::Rejected) => true,
+            (Self::Draft, Self::Withdrawn) => true,
+            (Self::Blocked, Self::Withdrawn) => true,
+            (Self::Ready, Self::Withdrawn) => true,
             // Idempotent no-op: same status is allowed (re-validate without
             // state change), useful for re-running start on the same owner.
             (a, b) if a == b => true,
@@ -103,6 +111,7 @@ impl FromStr for PlanStatus {
             "IMPLEMENTED" => Ok(Self::Implemented),
             "ACCEPTED" => Ok(Self::Accepted),
             "REJECTED" => Ok(Self::Rejected),
+            "WITHDRAWN" => Ok(Self::Withdrawn),
             other => Err(MineError::GraphInvalid {
                 detail: format!("unknown plan status: {other:?}"),
             }),
@@ -149,6 +158,59 @@ mod tests {
     }
 
     #[test]
+    fn withdraw_edges_from_unstarted_states_only() -> Result<(), MineError> {
+        for source in [PlanStatus::Draft, PlanStatus::Blocked, PlanStatus::Ready] {
+            source.validate_transition("09", PlanStatus::Withdrawn)?;
+        }
+        // Every other source state is refused (WITHDRAWN itself is covered
+        // below: the same-status pair is the generic idempotent no-op arm).
+        for source in [
+            PlanStatus::InProgress,
+            PlanStatus::Implemented,
+            PlanStatus::Accepted,
+            PlanStatus::Rejected,
+        ] {
+            let e = source
+                .validate_transition("09", PlanStatus::Withdrawn)
+                .unwrap_err();
+            assert_eq!(e.code(), "MINE_INVALID_TRANSITION", "{source:?}");
+        }
+        // WITHDRAWN is terminal: no edge leaves it (the same-status no-op is
+        // the generic idempotent re-validation arm; the withdraw service gate
+        // refuses re-runs before reaching it).
+        PlanStatus::Withdrawn
+            .validate_transition("09", PlanStatus::Withdrawn)
+            .unwrap();
+        for target in [
+            PlanStatus::Draft,
+            PlanStatus::Blocked,
+            PlanStatus::Ready,
+            PlanStatus::InProgress,
+            PlanStatus::Implemented,
+            PlanStatus::Accepted,
+            PlanStatus::Rejected,
+        ] {
+            let e = PlanStatus::Withdrawn
+                .validate_transition("09", target)
+                .unwrap_err();
+            assert_eq!(e.code(), "MINE_INVALID_TRANSITION", "{target:?}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_statuses_are_accepted_rejected_withdrawn() {
+        assert!(PlanStatus::Accepted.is_terminal());
+        assert!(PlanStatus::Rejected.is_terminal());
+        assert!(PlanStatus::Withdrawn.is_terminal());
+        assert!(!PlanStatus::Draft.is_terminal());
+        assert!(!PlanStatus::Blocked.is_terminal());
+        assert!(!PlanStatus::Ready.is_terminal());
+        assert!(!PlanStatus::InProgress.is_terminal());
+        assert!(!PlanStatus::Implemented.is_terminal());
+    }
+
+    #[test]
     fn round_trips_through_serde() {
         for s in [
             PlanStatus::Draft,
@@ -158,6 +220,7 @@ mod tests {
             PlanStatus::Implemented,
             PlanStatus::Accepted,
             PlanStatus::Rejected,
+            PlanStatus::Withdrawn,
         ] {
             // The TOML fact source stores statuses as SCREAMING_SNAKE_CASE
             // strings; verify the string round-trip rather than a bare enum

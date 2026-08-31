@@ -12,8 +12,7 @@ stdin/stdout carry protocol messages only. Diagnostics go to stderr and local fi
 
 ## Tool design
 
-The server exposes 17 focused tools today; the accepted ADR-0012 addition
-raises this to 18 in the next release:
+The server exposes 18 focused tools:
 
 - `mine_workspace_status`;
 - `mine_graph_validate`;

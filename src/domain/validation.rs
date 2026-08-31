@@ -10,7 +10,9 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::domain::error::{MineError, MineResult};
-use crate::domain::graph::{CURRENT_GRAPH_SCHEMA_VERSION, PlanWorkspace};
+use crate::domain::graph::{
+    CURRENT_GRAPH_SCHEMA_VERSION, PREVIOUS_GRAPH_SCHEMA_VERSION, PlanWorkspace,
+};
 use crate::domain::path::normalize_repo_relative;
 use crate::domain::plan_id::{CanonicalPlanId, is_exact_bootstrap_node, registered_plan_branch};
 use crate::domain::status::PlanStatus;
@@ -37,7 +39,10 @@ pub fn validate(ws: &PlanWorkspace) -> MineResult<()> {
 /// root. Persistence adapters use this form so a non-default
 /// `[plan].worktrees_root` remains authoritative.
 pub fn validate_with_worktrees_root(ws: &PlanWorkspace, worktrees_root: &str) -> MineResult<()> {
-    if ws.schema_version != CURRENT_GRAPH_SCHEMA_VERSION {
+    if !matches!(
+        ws.schema_version,
+        CURRENT_GRAPH_SCHEMA_VERSION | PREVIOUS_GRAPH_SCHEMA_VERSION
+    ) {
         return Err(MineError::GraphInvalid {
             detail: format!(
                 "unsupported execution-graph schema version {}; expected {} (run `mine graph repair-provenance` for schema v1/v2)",
@@ -126,7 +131,7 @@ pub fn validate_with_worktrees_root(ws: &PlanWorkspace, worktrees_root: &str) ->
         }
         let anchor_must_be_empty = matches!(
             p.status,
-            PlanStatus::Draft | PlanStatus::Blocked | PlanStatus::Ready
+            PlanStatus::Draft | PlanStatus::Blocked | PlanStatus::Ready | PlanStatus::Withdrawn
         );
         if anchor_must_be_empty != p.branch_anchor.is_empty() {
             return Err(MineError::GraphInvalid {
@@ -316,22 +321,6 @@ pub fn parallel_wave(ws: &PlanWorkspace) -> Vec<String> {
     wave
 }
 
-/// Validates that the generated Markdown view's revision matches the TOML
-/// revision.
-///
-/// `md_revision` is the revision number parsed from the generated view.
-pub fn validate_revision_parity(toml_revision: u64, md_revision: Option<u64>) -> MineResult<()> {
-    match md_revision {
-        Some(md) if md == toml_revision => Ok(()),
-        Some(md) => Err(MineError::GraphInvalid {
-            detail: format!("generated-view revision parity failure: toml={toml_revision} md={md}"),
-        }),
-        None => Err(MineError::GraphInvalid {
-            detail: "generated-view revision missing".to_string(),
-        }),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,6 +366,11 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            withdraw_reason: String::new(),
+            withdrawn_at: String::new(),
+            planning_scope: String::new(),
+            readiness_checked_at: String::new(),
+            adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
         }
@@ -510,19 +504,5 @@ mod tests {
         // 01 and 02 are now disjoint; all three ready with disjoint scopes.
         let wave = parallel_wave(&g);
         assert_eq!(wave.len(), 3);
-    }
-
-    #[test]
-    fn revision_parity_passes_and_fails() -> Result<(), MineError> {
-        validate_revision_parity(5, Some(5))?;
-        assert_eq!(
-            validate_revision_parity(5, Some(4)).unwrap_err().code(),
-            "MINE_GRAPH_INVALID"
-        );
-        assert_eq!(
-            validate_revision_parity(5, None).unwrap_err().code(),
-            "MINE_GRAPH_INVALID"
-        );
-        Ok(())
     }
 }

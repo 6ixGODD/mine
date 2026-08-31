@@ -57,18 +57,31 @@ The graph never moves into `.mine/`.
 
 ## Wire schema and provenance migration
 
-The current graph wire schema is `mine-graph-v3`. In addition to canonical
+The current graph wire schema is `mine-graph-v4`. In addition to canonical
 branch/lineage/worktree provenance, every started node persists its immutable
-`branch_anchor`. Older writers must refuse v3 before mutation; they must never
-round-trip unknown fields away.
+`branch_anchor`, and every node carries the optional v4 fields: the
+registration-time `planning_scope` with release-time readiness audit
+(`readiness_checked_at`, `adr_registry_revision`; ADR-0013) and the
+`WITHDRAWN` withdrawal evidence (`withdraw_reason`, `withdrawn_at`;
+ADR-0012). Older writers refuse newer schemas before mutation; they must
+never round-trip unknown fields away.
 
-The sole supported v2-to-v3 path is the explicit, revision-checked
-`mine graph repair-provenance` operation. It derives missing anchors only from
+The current reader accepts `mine-graph-v3` read-only. No v4 field requires
+derivation (all are optional with defaults), so a v3 graph upgrades
+implicitly on the next lifecycle mutation: the writer always emits `mine-graph-v4`
+and the schema bump rides the mutation's own single revision increment.
+`mine graph repair-provenance` upgrades a v3 graph as a version-only
+migration (one revision increment, no plan repairs).
+
+The v2-to-v3 anchor migration is unchanged and remains the only provenance
+derivation path: the explicit, revision-checked
+`mine graph repair-provenance` operation derives missing anchors only from
 the ordered implementation-commit chain or an active compensation's declared,
 preserved rejected-predecessor tip, validates actual Git commit objects and
 ancestry, and refuses ambiguity. It increments the revision exactly once when
-it migrates and is byte-preserving/idempotent on valid v3. Operators never edit
-the graph files by hand or treat reflogs/runtime files as provenance authority.
+it migrates and is byte-preserving/idempotent on the current schema.
+Operators never edit the graph files by hand or treat reflogs/runtime files
+as provenance authority.
 
 ## Revision and locking
 

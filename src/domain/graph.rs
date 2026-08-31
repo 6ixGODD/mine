@@ -15,11 +15,18 @@ use crate::domain::error::{MineError, MineResult};
 use crate::domain::path::{is_within, normalize_repo_relative};
 use crate::domain::status::PlanStatus;
 
-/// The only graph schema accepted by ordinary reads and lifecycle writes.
-pub const CURRENT_GRAPH_SCHEMA_VERSION: u32 = 3;
+/// The only graph schema emitted by the current writer. Adds optional node
+/// fields (planning scope, release readiness audit, withdrawal evidence) over
+/// v3; v3 graphs upgrade implicitly on the next lifecycle mutation.
+pub const CURRENT_GRAPH_SCHEMA_VERSION: u32 = 4;
+
+/// The immediately preceding wire schema: accepted for reading and upgraded
+/// to the current schema by the next lifecycle mutation (no field derivation
+/// is needed — the new fields are optional with defaults).
+pub const PREVIOUS_GRAPH_SCHEMA_VERSION: u32 = 3;
 
 /// The fail-closed provenance schema upgraded by Plan branch-anchor repair.
-pub const PREVIOUS_GRAPH_SCHEMA_VERSION: u32 = 2;
+pub const ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION: u32 = 2;
 
 /// The numeric bootstrap schema accepted only by the provenance repair path.
 pub const LEGACY_GRAPH_SCHEMA_VERSION: u32 = 1;
@@ -123,6 +130,26 @@ pub struct PlanNode {
     /// Compensation plan registered on rejection.
     #[serde(default)]
     pub compensating_plan: String,
+    /// Withdrawal reason recorded by `mine plan withdraw` (ADR-0012); empty
+    /// unless the node is `WITHDRAWN`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub withdraw_reason: String,
+    /// UTC timestamp of withdrawal; empty unless the node is `WITHDRAWN`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub withdrawn_at: String,
+    /// Non-empty planning scope recorded at registration (ADR-0013), defaulting
+    /// to the configured design root directory; immutable afterwards. Empty
+    /// only on legacy pre-v4 nodes, which read with design-root semantics.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub planning_scope: String,
+    /// UTC timestamp of the release-time planning-readiness re-check
+    /// (ADR-0013); empty before the node is released.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub readiness_checked_at: String,
+    /// ADR registry revision that satisfied the node's planning scope at
+    /// release; 0 for legacy nodes and registries without bootstrap.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub adr_registry_revision: u64,
     /// Derived canonical base lineage identity.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub lineage_id: String,
@@ -140,6 +167,10 @@ where
     } else {
         serializer.serialize_str(&format!("mine-graph-v{version}"))
     }
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 fn deserialize_graph_schema_version<'de, D>(deserializer: D) -> Result<u32, D::Error>
@@ -299,6 +330,11 @@ mod tests {
             updated_at: String::new(),
             rejection_reason: String::new(),
             compensating_plan: String::new(),
+            withdraw_reason: String::new(),
+            withdrawn_at: String::new(),
+            planning_scope: String::new(),
+            readiness_checked_at: String::new(),
+            adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
         }

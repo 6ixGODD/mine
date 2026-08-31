@@ -210,6 +210,9 @@ pub struct PlanAddArgs {
     /// Hard predecessor id (repeatable).
     #[arg(long, value_name = "ID")]
     pub hard: Vec<String>,
+    /// Planning scope recorded on the node (default: the design root).
+    #[arg(long = "planning-scope", value_name = "SCOPE")]
+    pub planning_scope: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -232,6 +235,8 @@ pub enum PlanCmd {
     Release(PlanReleaseArgs),
     /// Rewire downstream dependencies from a rejected plan onto its compensating plan.
     RewireCompensation(PlanRewireCompensationArgs),
+    /// Withdraw an unstarted plan into terminal WITHDRAWN.
+    Withdraw(PlanWithdrawArgs),
 }
 
 #[derive(Args, Debug)]
@@ -307,6 +312,16 @@ pub struct PlanRewireCompensationArgs {
     pub id: String,
 }
 
+#[derive(Args, Debug)]
+pub struct PlanWithdrawArgs {
+    /// Plan id.
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    /// Non-empty withdrawal reason.
+    #[arg(long, value_name = "REASON")]
+    pub reason: String,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum DesignCmd {
     /// Create a timestamped design backup.
@@ -315,6 +330,8 @@ pub enum DesignCmd {
     Validate,
     /// Show design status.
     Status,
+    /// Deterministically regenerate the generated ADR decision index.
+    Render,
     /// Check scoped ADR and Design readiness.
     Readiness {
         #[arg(long, value_name = "SCOPE")]
@@ -392,6 +409,9 @@ pub struct AdrSupersedeArgs {
     pub id: String,
     #[arg(long, value_name = "ID")]
     pub replacement: String,
+    /// Preview post-supersession readiness without writing anything.
+    #[arg(long = "dry-run")]
+    pub dry_run: bool,
 }
 
 #[derive(Subcommand, Debug)]

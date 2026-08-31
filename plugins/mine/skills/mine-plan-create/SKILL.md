@@ -1,7 +1,7 @@
 ---
 name: mine-plan-create
 description: "Create or update an evidence-backed, architecture-governed software implementation plan that is precise enough for independent coding agents to execute without rediscovering design decisions. Scope-first: an explicit user scope defines the planning boundary; research-backed: substantive planning requires mandatory scope-bounded web research comparing established practice; evidence-on-demand: repository inspection is proportional to scope. Use for initial project planning, incremental features, refactors, migrations, agent workflows, data/retrieval/tool contracts, or compensating plans. Routes material Design gaps back to mine-arch; never silently overrides accepted Design."
-version: 0.1.12
+version: 0.1.13
 ---
 
 # MINE Plan Create
@@ -37,8 +37,11 @@ The accepted MCP tools `mine-plan-create` may use:
 - `mine_adr_show` (`id`) / `mine_adr_list` / `mine_adr_validate` - inspect the
   digest-bound ADR registry before planning.
 - `mine_plan_add` (`id`, `path`, `title`, `design_references`,
-  `exclusive_write_paths`?, `hard_predecessors`?) - register a new `DRAFT`
-  plan node.
+  `exclusive_write_paths`?, `hard_predecessors`?, `planning_scope`?) -
+  register a new `DRAFT` plan node. `planning_scope` (ADR-0013) is the
+  non-empty scope recorded immutably on the node; when omitted, the node
+  records the configured design root directory (for this repository,
+  `docs/design`).
 - `mine_design_validate` (no arguments) - confirm design references resolve.
 
 Operations `mine-plan-create` needs that are intentionally **CLI-only** (no
@@ -48,7 +51,15 @@ registered-add path):
 - `mine plan release --id <id> --format json` - move a newly registered
   `DRAFT` plan into the startable frontier (`DRAFT` -> `READY` or `BLOCKED`).
   There is **no MCP tool for release**; `mine_plan_add` always creates `DRAFT`,
-  so release is a mandatory CLI fallback after registration.
+  so release is a mandatory CLI fallback after registration. Release re-runs
+  planning readiness for the node's persisted `planning_scope` and records
+  `readiness_checked_at` and `adr_registry_revision` as audit evidence
+  (ADR-0013); pass `--planning-scope <scope>` to `mine plan add` when the
+  plan's scope differs from the design root.
+- `mine plan withdraw --id <exact-stored-id> --reason <reason> --format
+  json` - retire a stale unstarted (`DRAFT`/`BLOCKED`/`READY`) registration
+  (ADR-0012; CLI only). Use it instead of re-planning over obsolete
+  registrations; it never applies to a started Plan.
 - `mine workspace open|close` - ephemeral plan-workspace lifecycle (CLI only).
 
 When a required operation has no MCP tool, fall back to the JSON CLI and state

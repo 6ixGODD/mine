@@ -63,6 +63,59 @@ fn render_is_stable_across_status_changes() {
     assert_eq!(baseline, reverted);
 }
 
+#[test]
+fn dependencies_render_real_edges_and_labeled_execution_order() {
+    let ws = development_fixture();
+    let md = render::render(&ws).unwrap();
+    // Every rendered edge corresponds to an actual predecessor entry.
+    assert!(md.contains("## Dependencies"), "Dependencies section: {md}");
+    // The development fixture hard-chains one successor off the base node.
+    assert!(md.contains("01 -> 02 (hard)"), "real hard edge: {md}");
+    // Parallel plans appear as siblings, never arrow-joined: the old view
+    // rendered `A -> B -> C` from sort adjacency, which readers mistook for
+    // dependencies.
+    assert!(!md.contains(" ->  -> "), "no empty edge: {md}");
+    let order_section = md
+        .split("## Execution order")
+        .nth(1)
+        .expect("order section");
+    assert!(
+        order_section.contains("One legal execution order:"),
+        "order labeled: {order_section}"
+    );
+    assert!(
+        order_section.contains("1. "),
+        "numbered list: {order_section}"
+    );
+    // Arrows never join plans inside the execution-order section.
+    assert!(
+        !order_section.contains(" -> "),
+        "no arrows in order: {order_section}"
+    );
+}
+
+#[test]
+fn edgeless_graph_renders_no_dependencies() {
+    let mut ws = sample_workspace();
+    ws.plans[0].hard_predecessors = vec![];
+    ws.plans[1].hard_predecessors = vec![];
+    let md = render_markdown(&ws).unwrap();
+    assert!(md.contains("(no dependencies)"), "edgeless marker: {md}");
+    // Both plans still appear as siblings in the numbered order.
+    assert!(md.contains("1. 01"), "{md}");
+    assert!(md.contains("2. 02"), "{md}");
+}
+
+#[test]
+fn soft_dependencies_render_as_soft_edges() {
+    let mut ws = sample_workspace();
+    ws.plans[1].hard_predecessors = vec![];
+    ws.plans[1].soft_predecessors = vec!["01".to_string()];
+    let md = render_markdown(&ws).unwrap();
+    assert!(md.contains("01 -> 02 (soft)"), "soft edge: {md}");
+    assert!(!md.contains("(hard)"), "no hard edges remain: {md}");
+}
+
 fn development_fixture() -> PlanWorkspace {
     toml::from_str(include_str!("fixtures/development-execution-graph.toml"))
         .expect("development graph fixture parses")
@@ -103,6 +156,11 @@ fn sample_workspace() -> PlanWorkspace {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                withdraw_reason: String::new(),
+                withdrawn_at: String::new(),
+                planning_scope: String::new(),
+                readiness_checked_at: String::new(),
+                adr_registry_revision: 0,
                 lineage_id: String::new(),
                 worktree_path: String::new(),
             },
@@ -128,6 +186,11 @@ fn sample_workspace() -> PlanWorkspace {
                 updated_at: String::new(),
                 rejection_reason: String::new(),
                 compensating_plan: String::new(),
+                withdraw_reason: String::new(),
+                withdrawn_at: String::new(),
+                planning_scope: String::new(),
+                readiness_checked_at: String::new(),
+                adr_registry_revision: 0,
                 lineage_id: String::new(),
                 worktree_path: String::new(),
             },

@@ -48,7 +48,19 @@ pub struct WorkspaceStatusOutcome {
     pub has_unresolved: bool,
 }
 
-/// The internal workspace service. Constructed with injected ports for
+/// Statuses that keep a workspace unresolved (unable to close). `ACCEPTED`
+/// nodes are terminal; `REJECTED` nodes close through their accepted
+/// compensation chain; `WITHDRAWN` nodes are retired and never block closure
+/// (ADR-0012).
+const UNRESOLVED_STATUSES: [PlanStatus; 5] = [
+    PlanStatus::Draft,
+    PlanStatus::Blocked,
+    PlanStatus::Ready,
+    PlanStatus::InProgress,
+    PlanStatus::Implemented,
+];
+
+/// The workspace service. Constructed with injected ports for
 /// deterministic tests.
 pub struct WorkspaceService<'a> {
     uuid_source: &'a dyn UuidSource,
@@ -149,13 +161,14 @@ impl<'a> WorkspaceService<'a> {
     }
 
     /// Reports the current workspace status. Read-only (no mutation, no
-    /// revision change).
+    /// revision change). Withdrawn nodes are retired and do not count as
+    /// unresolved (ADR-0012).
     pub fn status(&self, store: &TomlStore) -> MineResult<WorkspaceStatusOutcome> {
         let ws = store.load()?;
         let has_unresolved = ws
             .plans
             .iter()
-            .any(|p| !matches!(p.status, PlanStatus::Accepted | PlanStatus::Rejected));
+            .any(|p| UNRESOLVED_STATUSES.contains(&p.status));
         Ok(WorkspaceStatusOutcome {
             workspace_id: ws.workspace_id,
             revision: ws.revision,
@@ -167,18 +180,32 @@ impl<'a> WorkspaceService<'a> {
         })
     }
 
-    /// Validates closure readiness. A workspace is closable when every plan is
-    /// terminal (`ACCEPTED` or `REJECTED`-with-compensation). Read-only.
+    /// Validates closure readiness. A workspace is closable when no node is in
+    /// an unresolved status (`ACCEPTED` nodes are terminal, `REJECTED` nodes
+    /// close through their compensation chain, and `WITHDRAWN` nodes are
+    /// retired). Read-only.
     ///
     /// # Errors
-    /// Returns [`MineError::GraphInvalid`] when unresolved plans remain.
+    /// Returns [`MineError::GraphInvalid`] when unresolved plans remain,
+    /// listing the unresolved statuses.
     pub fn close(&self, store: &TomlStore) -> MineResult<WorkspaceStatusOutcome> {
         let status = self.status(store)?;
         if status.has_unresolved {
+            let ws = store.load()?;
+            let mut unresolved: Vec<&str> = ws
+                .plans
+                .iter()
+                .filter(|p| UNRESOLVED_STATUSES.contains(&p.status))
+                .map(|p| p.status.as_str())
+                .collect();
+            unresolved.sort_unstable();
+            unresolved.dedup();
             return Err(MineError::GraphInvalid {
                 detail: format!(
-                    "workspace {} cannot close: unresolved plans remain (revision {})",
-                    status.workspace_id, status.revision
+                    "workspace {} cannot close: unresolved plans remain ({}; revision {})",
+                    status.workspace_id,
+                    unresolved.join(", "),
+                    status.revision
                 ),
             });
         }

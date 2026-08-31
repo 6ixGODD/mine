@@ -1,6 +1,6 @@
 schema_version = 1
 repository_id = "9c672a03-bab3-566e-9588-39cb5e6445c3"
-mine_code_version = "0.1.12"
+mine_code_version = "0.1.13"
 
 [branches]
 stable = "master"
@@ -15,10 +15,10 @@ leaf_soft_limit_lines = 400
 
 [plan]
 root = "docs/plan"
-worktrees_root = ".mine/worktrees"
-shared_environment_root = "."
 ephemeral = true
 purge_before_stable_release = true
+worktrees_root = ".mine/worktrees"
+shared_environment_root = "."
 
 [graph]
 source = "docs/plan/execution-graph.toml"

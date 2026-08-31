@@ -52,9 +52,11 @@ owner-approved serialized or coarser exclusive strategy before any build runs.
 - start-time `branch_anchor` capture for base and compensation nodes; Root graph
   divergence followed by valid active/reviewable reuse; rewritten, stale,
   detached, wrong-path/branch, and missing-anchor refusals.
-- graph v2-to-v3 provenance repair for recorded implementation chains and
-  active compensation ancestry, including ambiguous-base and missing-object
-  no-write refusals plus old-writer rejection of v3.
+- graph provenance repair: the v2 anchor migration for recorded
+  implementation chains and active compensation ancestry, including
+  ambiguous-base and missing-object no-write refusals, the v3-to-v4
+  version-only upgrade, generated-view byte parity, and old-writer rejection
+  of newer schemas.
 - evidence-bound `IN_PROGRESS -> REJECTED`, canonical report and next sibling
   enforcement, revision conflict, no fabricated implementation evidence, and
   preserved unmerged lineage worktree.
@@ -102,7 +104,7 @@ The MINE source repository adds project-local gates enforced by `AGENTS.md` qual
 - root/generated Skill synchronization (`python scripts/sync-plugin-assets.py --check`);
 - embedded payload verification;
 - four-client installation smoke tests;
-- MCP discovery (exactly seventeen tools);
+- MCP discovery (exactly eighteen tools);
 - bootstrap tests;
 - release artifact packaging and cross-platform CI.
 

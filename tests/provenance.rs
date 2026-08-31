@@ -9,7 +9,7 @@ use mine::application::graph_service::{
 use mine::application::plan_service::{PlanReleaseRequest, PlanRewireRequest, PlanService};
 use mine::cli::context::{GlobalOpts, OutputFormat, build_context};
 use mine::domain::graph::{
-    CURRENT_GRAPH_SCHEMA_VERSION, LEGACY_GRAPH_SCHEMA_VERSION, PREVIOUS_GRAPH_SCHEMA_VERSION,
+    ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION, CURRENT_GRAPH_SCHEMA_VERSION, LEGACY_GRAPH_SCHEMA_VERSION,
     PlanNode, PlanWorkspace,
 };
 use mine::domain::plan_id::{CanonicalPlanId, registered_plan_branch};
@@ -105,6 +105,11 @@ fn canonical_node(id: &str, status: PlanStatus, hard: &[&str]) -> PlanNode {
         updated_at: "2026-08-21T00:00:00Z".to_string(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        withdraw_reason: String::new(),
+        withdrawn_at: String::new(),
+        planning_scope: String::new(),
+        readiness_checked_at: String::new(),
+        adr_registry_revision: 0,
         lineage_id: parsed.lineage_id(),
         worktree_path: parsed.worktree_path(),
     }
@@ -160,6 +165,13 @@ fn seed(root: &Path, workspace: &PlanWorkspace) {
         toml::to_string(&workspace).unwrap(),
     )
     .unwrap();
+    // A generated view is only renderable for graphs the current reader
+    // accepts; legacy v1/v2 seeds and deliberately damaged fixtures are
+    // exercised through their own explicit paths without a view.
+    let store = TomlStore::new(root);
+    if store.load().is_ok() {
+        store.render().unwrap();
+    }
 }
 
 fn damaged_live_workspace() -> PlanWorkspace {
@@ -246,7 +258,7 @@ fn damaged_v1_repair_is_deterministic_idempotent_and_stale_writer_incompatible()
     let bytes_after_first =
         std::fs::read(tmp.path().join("docs/plan/execution-graph.toml")).unwrap();
     let text_after_first = String::from_utf8(bytes_after_first.clone()).unwrap();
-    assert!(text_after_first.starts_with("schema_version = \"mine-graph-v3\"\n"));
+    assert!(text_after_first.starts_with("schema_version = \"mine-graph-v4\"\n"));
 
     #[allow(dead_code)]
     #[derive(serde::Deserialize)]
@@ -260,7 +272,7 @@ fn damaged_v1_repair_is_deterministic_idempotent_and_stale_writer_incompatible()
     );
     assert!(
         toml::from_str::<PlanWorkspace>(
-            &text_after_first.replace("schema_version = \"mine-graph-v3\"", "schema_version = 3")
+            &text_after_first.replace("schema_version = \"mine-graph-v4\"", "schema_version = 4")
         )
         .is_err(),
         "the current reader must not accept a v2 marker an old u32 writer can parse"
@@ -451,6 +463,11 @@ fn every_lifecycle_write_retains_all_canonical_provenance() {
             // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
             id: "plan04".to_string(),
             updated_at: "2026-08-21T05:00:00Z".to_string(),
+            readiness_audit: mine::domain::plan_release::ReleaseReadinessAudit {
+                planning_scope: "docs/design".to_string(),
+                checked_at: "2026-08-21T05:00:00Z".to_string(),
+                adr_registry_revision: 0,
+            },
         })
         .unwrap();
     assert_all_canonical_provenance(&store.load().unwrap());
@@ -644,7 +661,7 @@ fn v2_accepted_deleted_branch_derives_anchor_from_first_commit_parent() {
     accepted.branch_anchor.clear();
     accepted.implementation_commits = vec![implementation];
     let mut graph = workspace(8, vec![accepted]);
-    graph.schema_version = PREVIOUS_GRAPH_SCHEMA_VERSION;
+    graph.schema_version = ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION;
     seed(tmp.path(), &graph);
 
     let repaired = TomlStore::new(tmp.path())
@@ -703,7 +720,7 @@ fn v2_active_compensation_derives_preserved_predecessor_tip() {
     commit_file(&worktree, "compensation.txt", "descendant\n", "descendant");
 
     let mut graph = workspace(12, vec![rejected, active]);
-    graph.schema_version = PREVIOUS_GRAPH_SCHEMA_VERSION;
+    graph.schema_version = ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION;
     seed(tmp.path(), &graph);
     let repaired = TomlStore::new(tmp.path())
         .repair_provenance_with_revision(12)
@@ -724,7 +741,7 @@ fn v2_ambiguous_active_base_refuses_without_writing() {
     let mut active = canonical_node("plan01", PlanStatus::InProgress, &[]);
     active.branch_anchor.clear();
     let mut graph = workspace(21, vec![active]);
-    graph.schema_version = PREVIOUS_GRAPH_SCHEMA_VERSION;
+    graph.schema_version = ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION;
     seed(tmp.path(), &graph);
     let path = tmp.path().join("docs/plan/execution-graph.toml");
     let before = std::fs::read(&path).unwrap();

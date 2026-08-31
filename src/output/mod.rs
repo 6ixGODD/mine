@@ -86,6 +86,10 @@ pub fn exit_code_for(err: &MineError) -> i32 {
         // recovery (exit 7).
         MineError::AgentTransactionIncomplete { .. } => exit_code::PARTIAL,
         MineError::AgentRollbackFailed { .. } => exit_code::PARTIAL,
+        // Git-evidence refusals (diverged tips, dirty worktrees, missing
+        // objects refusing a provably-lossless cleanup) are external-evidence
+        // failures (exit 6).
+        MineError::GitEvidence { .. } => exit_code::EXTERNAL,
         // I/O and infrastructure failures are treated as external/gate
         // failures: filesystem is an external dependency. Partial-success
         // cases (TOML written, render failed) are surfaced as GraphInvalid with

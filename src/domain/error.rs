@@ -142,6 +142,15 @@ pub enum MineError {
     #[error("evidence missing for plan {plan_id}: {detail}")]
     EvidenceMissing { plan_id: String, detail: String },
 
+    /// Git evidence could not prove a operation safe (for example the
+    /// provably-lossless withdrawal cleanup): a diverged branch tip, a dirty
+    /// linked worktree, or a missing Git object. Nothing is written when this
+    /// fires; unique work belongs to the evidence-bound rejection path or
+    /// owner investigation.
+    /// Exit: EXTERNAL (6). Stable code `MINE_GIT_EVIDENCE`.
+    #[error("git evidence failure for plan {plan_id}: {detail}")]
+    GitEvidence { plan_id: String, detail: String },
+
     /// A filesystem input/output error.
     #[error("input/output error: {0}")]
     Io(#[from] std::io::Error),
@@ -233,6 +242,7 @@ impl MineError {
             Self::RevisionConflict { .. } => "MINE_REVISION_CONFLICT",
             Self::LockTimeout { .. } => "MINE_LOCK_TIMEOUT",
             Self::EvidenceMissing { .. } => "MINE_EVIDENCE_MISSING",
+            Self::GitEvidence { .. } => "MINE_GIT_EVIDENCE",
             Self::Io(_) => "MINE_IO",
             Self::AgentPathEscape { .. } => "MINE_AGENT_PATH_ESCAPE",
             Self::AgentCollision { .. } => "MINE_AGENT_COLLISION",

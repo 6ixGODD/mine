@@ -43,9 +43,9 @@ use crate::application::graph_service::{
     PlanStartRequest,
 };
 use crate::application::plan_service::PlanService;
+use crate::application::plan_service::PlanWithdrawRequest;
 use crate::cli::context::{GlobalOpts, OutputFormat, build_context, load_config};
 use crate::domain::error::MineError;
-use crate::domain::plan_id::CanonicalPlanId;
 use crate::domain::ports::Clock;
 use crate::infrastructure::system::SystemClock;
 
@@ -375,7 +375,7 @@ impl MineServer {
         }
     }
 
-    // ------------------- mutating tools (6) -------------------
+    // ------------------- mutating tools (7) -------------------
 
     #[tool(
         name = "mine_graph_repair_provenance",
@@ -424,11 +424,25 @@ impl MineServer {
                 ),
             ]));
         };
+        // ADR-0013: gate registration on the resolved planning scope (the
+        // explicit argument or the configured design-root default), never a
+        // derived lineage id.
+        let planning_scope = args.planning_scope.clone().unwrap_or_default();
+        let planning_scope = if planning_scope.trim().is_empty() {
+            ctx.config
+                .as_ref()
+                .map(DesignService::default_planning_scope)
+                .unwrap_or_else(|| "docs/design".to_string())
+        } else {
+            if let Err(error) = crate::domain::path::normalize_repo_relative(&planning_scope) {
+                return Ok(MineServer::tool_error(&error));
+            }
+            planning_scope
+        };
         if let Some(config) = ctx.config.as_ref() {
             if ctx.repo_root.join(&config.adr.registry).exists() {
-                let readiness = CanonicalPlanId::parse(&args.id).and_then(|id| {
-                    AdrService::new(&ctx.repo_root, config).require_planning_ready(&id.lineage_id())
-                });
+                let readiness =
+                    AdrService::new(&ctx.repo_root, config).require_planning_ready(&planning_scope);
                 if let Err(error) = readiness {
                     return Ok(MineServer::tool_error(&error));
                 }
@@ -443,6 +457,7 @@ impl MineServer {
             design_references: args.design_references,
             exclusive_write_paths: args.exclusive_write_paths.unwrap_or_default(),
             hard_predecessors: args.hard_predecessors.unwrap_or_default(),
+            planning_scope,
         };
         Ok(match svc.add(req) {
             Err(e) => MineServer::tool_error(&e),
@@ -636,6 +651,52 @@ impl MineServer {
             },
         )
     }
+    #[tool(
+        name = "mine_plan_withdraw",
+        description = "Withdraw an unstarted plan (DRAFT/BLOCKED/READY) into terminal WITHDRAWN with a recorded reason (ADR-0012). Performs the same provably-lossless Git cleanup checks; mutates the graph under the lock, revision +1.",
+        annotations(read_only_hint = false)
+    )]
+    fn mine_plan_withdraw(
+        &self,
+        Parameters(args): Parameters<MinePlanWithdrawArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Ok(ctx) = self.ctx() else {
+            return Ok(CallToolResult::error(vec![
+                rmcp::model::ContentBlock::text(
+                    "MINE_REPOSITORY_NOT_FOUND: repository unavailable",
+                ),
+            ]));
+        };
+        let graph = GraphService::new(&ctx.store);
+        let expected = match graph.validate() {
+            Ok(ws) => ws.revision,
+            Err(e) => return Ok(MineServer::tool_error(&e)),
+        };
+        let now = SystemClock.now_utc_rfc3339();
+        let svc = PlanService::new(&graph);
+        Ok(
+            match svc.withdraw(PlanWithdrawRequest {
+                id: args.id.clone(),
+                reason: args.reason,
+                withdrawn_at: now,
+            }) {
+                Err(e) => MineServer::tool_error(&e),
+                Ok((saved, withdrawal)) => CallToolResult::structured(json!({
+                    "command": "plan.withdraw",
+                    "ok": true,
+                    "revision_before": expected,
+                    "revision_after": saved.revision,
+                    "data": {
+                        "plan": withdrawal.id,
+                        "status_before": withdrawal.status_before,
+                        "status_after": withdrawal.status_after,
+                        "withdrawn_at": withdrawal.withdrawn_at,
+                        "cleaned_git_artifacts": withdrawal.cleaned_git_artifacts,
+                    },
+                })),
+            },
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +751,10 @@ struct MinePlanAddArgs {
     /// plan is added as `DRAFT`).
     #[serde(default)]
     hard_predecessors: Option<Vec<String>>,
+    /// Planning scope recorded on the node (ADR-0013). Optional (defaults to
+    /// the configured design root directory).
+    #[serde(default)]
+    planning_scope: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -732,4 +797,12 @@ struct MinePlanRejectArgs {
     review_report: Option<String>,
     /// The registered compensating plan id.
     compensating_plan: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MinePlanWithdrawArgs {
+    id: String,
+    /// The non-empty withdrawal reason.
+    reason: String,
 }

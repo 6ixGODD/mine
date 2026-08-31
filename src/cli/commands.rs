@@ -28,13 +28,14 @@ use crate::application::graph_service::{
 };
 use crate::application::init_service::InitService;
 use crate::application::plan_service::PlanService;
-use crate::application::plan_service::{PlanReleaseRequest, PlanRewireRequest};
+use crate::application::plan_service::{
+    PlanReleaseRequest, PlanRewireRequest, PlanWithdrawRequest,
+};
 use crate::application::workspace_service::WorkspaceService;
 use crate::cli::context::{CommandContext, build_context, load_config_or_error};
 use crate::cli::{HandlerError, envelope_for};
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::{PlanNode, PlanWorkspace};
-use crate::domain::plan_id::CanonicalPlanId;
 use crate::domain::ports::Clock;
 use crate::domain::validation;
 use crate::infrastructure::design_backup::DesignBackup;
@@ -89,6 +90,7 @@ pub fn handle(
             "reject" => plan_reject(parsed, rest),
             "release" => plan_release(parsed, rest),
             "rewire-compensation" => plan_rewire_compensation(parsed, rest),
+            "withdraw" => plan_withdraw(parsed, rest),
             _ => Err(HandlerError::usage(format!(
                 "unknown plan subcommand {sub:?}"
             ))),
@@ -97,6 +99,7 @@ pub fn handle(
             "backup" => design_backup(parsed, rest),
             "validate" => design_validate(parsed, rest),
             "status" => design_status(parsed, rest),
+            "render" => design_render(parsed, rest),
             "readiness" => design_readiness(parsed, rest),
             _ => Err(HandlerError::usage(format!(
                 "unknown design subcommand {sub:?}"
@@ -610,25 +613,14 @@ fn workspace_close(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> Handler
 fn graph_validate(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
     let ctx = build_context(&parsed.global).map_err(ctx_err)?;
     // Route through the shared GraphService (same path the MCP tool uses).
+    // validate() enforces generated-view byte parity: a stale or missing
+    // view fails here naming `mine graph render` as the repair.
     let svc = GraphService::new(&ctx.store);
     let ws = svc.validate().map_err(ctx_err)?;
-    // load() already validates; confirm revision-parity with the rendered
-    // view if it exists.
-    let mut warnings: Vec<Value> = Vec::new();
-    if ctx.store.md_path().exists() {
-        if let Err(e) = validate_md_parity(&ctx) {
-            warnings.push(json!({"code":"MINE_GRAPH_PARITY","message": format!("{e}")}));
-        }
-    }
     let env = envelope_for("graph.validate", Some(&ctx.repo_root))
         .with_workspace_id(ws.workspace_id.clone())
         .with_revision(ws.revision, ws.revision)
-        .with_data(json!({"plans": ws.plans.len(), "warnings_emitted": !warnings.is_empty()}))
-        .with_warning_if(
-            !warnings.is_empty(),
-            "MINE_GRAPH_PARITY",
-            "rendered view is stale",
-        );
+        .with_data(json!({"plans": ws.plans.len(), "warnings_emitted": false}));
     let lines = vec![
         HumanLine::Section("mine graph validate: ok".to_string()),
         HumanLine::Field {
@@ -640,7 +632,6 @@ fn graph_validate(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerR
             value: ws.revision.to_string(),
         },
     ];
-    let _ = warnings;
     Ok((env, lines))
 }
 
@@ -776,6 +767,11 @@ fn node_json(p: &PlanNode) -> Value {
         "lineage_id": p.lineage_id,
         "worktree_path": p.worktree_path,
         "hard_predecessors": p.hard_predecessors,
+        "planning_scope": p.planning_scope,
+        "readiness_checked_at": p.readiness_checked_at,
+        "adr_registry_revision": p.adr_registry_revision,
+        "withdraw_reason": p.withdraw_reason,
+        "withdrawn_at": p.withdrawn_at,
         "owner": p.owner,
         "run_id": p.run_id,
         "implementation_report": p.implementation_report,
@@ -783,48 +779,88 @@ fn node_json(p: &PlanNode) -> Value {
     })
 }
 
-fn validate_md_parity(ctx: &CommandContext) -> MineResult<()> {
-    let ws = ctx.store.load()?;
-    let md = std::fs::read_to_string(ctx.store.md_path())?;
-    let rev = regex_lite_rev(&md);
-    if rev == Some(ws.revision) {
-        Ok(())
-    } else {
-        Err(MineError::GraphInvalid {
-            detail: format!(
-                "rendered view revision {:?} != toml revision {} (run `mine graph render`)",
-                rev, ws.revision
-            ),
-        })
-    }
-}
-
-/// Extracts the revision from the generated Markdown view without pulling in a
-/// regex dependency; the view always contains a `Revision: \`N\`` line.
-fn regex_lite_rev(md: &str) -> Option<u64> {
-    for line in md.lines() {
-        if let Some(rest) = line.strip_prefix("- Revision: `") {
-            if let Some(num) = rest.strip_suffix('`') {
-                return num.parse().ok();
-            }
-        }
-    }
-    None
-}
-
 // ----------------------------------------------------------------------------
 // plan (mutations via save_with_revision)
 // ----------------------------------------------------------------------------
 
-fn require_plan_readiness(ctx: &CommandContext, id: &str) -> MineResult<()> {
+/// Enforces planning readiness for a scope at registration time (ADR-0013).
+/// The scope is the adapter-resolved planning scope — the explicit
+/// `--planning-scope` value or the configured design-root default — never a
+/// derived lineage id. Repositories without a bootstrapped ADR registry are
+/// left to `mine init` (fail-open by design, matching `AdrService`).
+fn require_plan_readiness(ctx: &CommandContext, scope: &str) -> MineResult<()> {
     let Some(config) = ctx.config.as_ref() else {
         return Ok(());
     };
     if !ctx.repo_root.join(&config.adr.registry).exists() {
         return Ok(());
     }
-    let lineage = CanonicalPlanId::parse(id)?.lineage_id();
-    AdrService::new(&ctx.repo_root, config).require_planning_ready(&lineage)
+    AdrService::new(&ctx.repo_root, config).require_planning_ready(scope)
+}
+
+/// Resolves the planning scope for registration (ADR-0013): the explicit
+/// value verbatim, or the configured design-root directory when omitted.
+fn resolve_registration_scope(ctx: &CommandContext, explicit: Option<&str>) -> MineResult<String> {
+    match explicit {
+        Some(scope) if !scope.trim().is_empty() => {
+            crate::domain::path::normalize_repo_relative(scope)?;
+            Ok(scope.to_string())
+        }
+        _ => Ok(ctx
+            .config
+            .as_ref()
+            .map(DesignService::default_planning_scope)
+            .unwrap_or_else(|| "docs/design".to_string())),
+    }
+}
+
+/// Resolves the node's persisted planning scope, falling back to the
+/// design-root default for legacy pre-v4 nodes (ADR-0013), and returns the
+/// release-time readiness audit evidence. A blocked readiness fails with the
+/// blocking ADR DTOs in the error detail and writes nothing.
+fn resolve_release_readiness(
+    ctx: &CommandContext,
+    id: &str,
+) -> MineResult<crate::domain::plan_release::ReleaseReadinessAudit> {
+    let node = GraphService::new(&ctx.store)
+        .validate()?
+        .get(id)
+        .cloned()
+        .ok_or_else(|| MineError::PlanNotFound {
+            plan_id: id.to_string(),
+        })?;
+    let scope = if node.planning_scope.is_empty() {
+        ctx.config
+            .as_ref()
+            .map(DesignService::default_planning_scope)
+            .unwrap_or_else(|| "docs/design".to_string())
+    } else {
+        node.planning_scope.clone()
+    };
+    let checked_at = SystemClock.now_utc_rfc3339();
+    let registry_revision = match ctx.config.as_ref() {
+        Some(config) if ctx.repo_root.join(&config.adr.registry).exists() => {
+            let readiness = AdrService::new(&ctx.repo_root, config).readiness(Some(&scope))?;
+            if !readiness.ready {
+                let blockers = readiness
+                    .blockers
+                    .iter()
+                    .map(|blocker| format!("{} ({})", blocker.id, blocker.reason))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(MineError::GraphInvalid {
+                    detail: format!("planning readiness blocked for {scope}: {blockers}"),
+                });
+            }
+            readiness.registry_revision
+        }
+        _ => 0,
+    };
+    Ok(crate::domain::plan_release::ReleaseReadinessAudit {
+        planning_scope: scope,
+        checked_at,
+        adr_registry_revision: registry_revision,
+    })
 }
 
 fn plan_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
@@ -858,7 +894,9 @@ fn plan_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
         .iter()
         .map(|s| s.to_string())
         .collect();
-    require_plan_readiness(&ctx, &id).map_err(ctx_err)?;
+    let planning_scope =
+        resolve_registration_scope(&ctx, flag(&flags, "planning-scope")).map_err(ctx_err)?;
+    require_plan_readiness(&ctx, &planning_scope).map_err(ctx_err)?;
 
     // Route through the shared PlanService (same path the MCP tool uses).
     let graph = GraphService::new(&ctx.store);
@@ -871,6 +909,7 @@ fn plan_add(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
             design_references: design_refs,
             exclusive_write_paths: writes,
             hard_predecessors: hard,
+            planning_scope,
         })
         .map_err(|e| map_partial(ctx_err(e), &ctx))?;
     let expected = saved.revision - 1;
@@ -1109,7 +1148,10 @@ fn plan_release(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResu
     let id = flag(&flags, "id")
         .ok_or_else(|| HandlerError::usage("plan release requires --id"))?
         .to_string();
-    require_plan_readiness(&ctx, &id).map_err(ctx_err)?;
+    // ADR-0013: re-run planning readiness for the node's persisted scope
+    // before the transition; a blocked readiness fails with the blocking ADR
+    // DTOs and writes nothing.
+    let readiness_audit = resolve_release_readiness(&ctx, &id).map_err(ctx_err)?;
     let now = SystemClock.now_utc_rfc3339();
     let graph = GraphService::new(&ctx.store);
     let svc = PlanService::new(&graph);
@@ -1118,11 +1160,13 @@ fn plan_release(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResu
         .release(PlanReleaseRequest {
             id: id.clone(),
             updated_at: now,
+            readiness_audit,
         })
         .map_err(|e| map_partial(ctx_err(e), &ctx))?;
     let node = saved.get(&id).expect("present in saved ws");
     let status_after = node.status;
     let hard = node.hard_predecessors.clone();
+    let planning_scope = node.planning_scope.clone();
     let unsatisfied =
         crate::domain::plan_release::unsatisfied_predecessors(&saved, &id).unwrap_or_default();
     let env = envelope_for("plan.release", Some(&ctx.repo_root))
@@ -1134,6 +1178,7 @@ fn plan_release(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResu
             "status_after": status_after.as_str(),
             "hard_predecessors": hard,
             "unsatisfied_predecessors": unsatisfied,
+            "planning_scope": planning_scope,
         }));
     let lines = vec![HumanLine::Field {
         key: "  released".to_string(),
@@ -1177,6 +1222,61 @@ fn plan_rewire_compensation(parsed: &crate::cli::ParsedArgs, rest: &[String]) ->
     let lines = vec![HumanLine::Field {
         key: "  rewired".to_string(),
         value: format!("{id} -> {comp} (affected: {})", affected.len()),
+    }];
+    Ok((env, lines))
+}
+
+/// `mine plan withdraw --id <id> --reason <reason>`: retires an unstarted
+/// plan (`DRAFT`/`BLOCKED`/`READY`) into terminal `WITHDRAWN` (ADR-0012),
+/// routed through the shared `PlanService` (the same path the MCP
+/// `mine_plan_withdraw` tool uses).
+fn plan_withdraw(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let (flags, _pos) = parse_flags(rest);
+    let id = flag(&flags, "id")
+        .ok_or_else(|| HandlerError::usage("plan withdraw requires --id"))?
+        .to_string();
+    let reason = flag(&flags, "reason")
+        .ok_or_else(|| HandlerError::usage("plan withdraw requires --reason"))?
+        .to_string();
+    let now = SystemClock.now_utc_rfc3339();
+    let graph = GraphService::new(&ctx.store);
+    let svc = PlanService::new(&graph);
+    let expected = graph.validate().map_err(ctx_err)?.revision;
+    let (saved, withdrawal) = svc
+        .withdraw(PlanWithdrawRequest {
+            id: id.clone(),
+            reason,
+            withdrawn_at: now,
+        })
+        .map_err(ctx_err)?;
+    let env = envelope_for("plan.withdraw", Some(&ctx.repo_root))
+        .with_workspace_id(saved.workspace_id.clone())
+        .with_revision(expected, saved.revision)
+        .with_data(json!({
+            "plan": withdrawal.id,
+            "status_before": withdrawal.status_before,
+            "status_after": withdrawal.status_after,
+            "withdrawn_at": withdrawal.withdrawn_at,
+            "cleaned_git_artifacts": withdrawal.cleaned_git_artifacts,
+        }));
+    let lines = vec![HumanLine::Field {
+        key: "  withdrawn".to_string(),
+        value: format!(
+            "{} ({} -> WITHDRAWN{}, git artifacts {})",
+            withdrawal.id,
+            withdrawal.status_before,
+            if withdrawal.cleaned_git_artifacts {
+                "; cleaned"
+            } else {
+                ""
+            },
+            if withdrawal.cleaned_git_artifacts {
+                "removed"
+            } else {
+                "none"
+            }
+        ),
     }];
     Ok((env, lines))
 }
@@ -1341,13 +1441,31 @@ fn adr_supersede(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerRes
         .ok_or_else(|| HandlerError::usage("adr supersede requires --id"))?
         .to_string();
     let replacement = flag(&flags, "replacement")
-        .ok_or_else(|| HandlerError::usage("adr supersede requires --replacement"))?;
+        .ok_or_else(|| HandlerError::usage("adr supersede requires --replacement"))?
+        .to_string();
+    let dry_run = flags.iter().any(|(k, _)| k == "dry-run");
     let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    if dry_run {
+        let preview = service
+            .supersede_preview(&id, &replacement)
+            .map_err(ctx_err)?;
+        let revision = preview.registry_revision;
+        let env = envelope_for("adr.supersede-preview", Some(&ctx.repo_root))
+            .with_revision(revision, revision)
+            .with_data(serde_json::to_value(&preview).unwrap_or(Value::Null));
+        return Ok((
+            env,
+            vec![HumanLine::Field {
+                key: "  preview".to_string(),
+                value: format!("{id} -> {replacement} (no changes written)"),
+            }],
+        ));
+    }
     let saved = service
-        .supersede(&id, replacement, &SystemClock.now_utc_rfc3339())
+        .supersede(&id, &replacement, &SystemClock.now_utc_rfc3339())
         .map_err(ctx_err)?;
     let env = envelope_for("adr.supersede", Some(&ctx.repo_root))
-        .with_data(json!({"adr": saved.get(&id), "replacement": saved.get(replacement)}));
+        .with_data(json!({"adr": saved.get(&id), "replacement": saved.get(&replacement)}));
     Ok((
         env,
         vec![HumanLine::Field {
@@ -1371,6 +1489,31 @@ fn adr_validate(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerRes
             value: format!("{} ADRs", registry.entries.len()),
         }],
     ))
+}
+
+/// `mine design render`: deterministically regenerates the generated ADR
+/// decision index from the registry without touching the registry or its
+/// revision; reports the path and whether bytes changed.
+fn design_render(parsed: &crate::cli::ParsedArgs, _rest: &[String]) -> HandlerResult {
+    let ctx = build_context(&parsed.global).map_err(ctx_err)?;
+    let service = adr_service_for(&ctx).map_err(ctx_err)?;
+    let outcome = service.render_design_index().map_err(ctx_err)?;
+    let env = envelope_for("design.render", Some(&ctx.repo_root)).with_data(json!({
+        "path": outcome.path,
+        "changed": outcome.changed,
+    }));
+    let lines = vec![
+        HumanLine::Section("mine design render".to_string()),
+        HumanLine::Field {
+            key: "  path".to_string(),
+            value: outcome.path.clone(),
+        },
+        HumanLine::Field {
+            key: "  changed".to_string(),
+            value: outcome.changed.to_string(),
+        },
+    ];
+    Ok((env, lines))
 }
 
 fn design_readiness(parsed: &crate::cli::ParsedArgs, rest: &[String]) -> HandlerResult {
@@ -1580,24 +1723,6 @@ fn map_partial(err: HandlerError, _ctx: &CommandContext) -> HandlerError {
             message,
             exit_code,
             details,
-        }
-    }
-}
-
-// ----------------------------------------------------------------------------
-// small trait extension for ergonomic envelope-warning building
-// ----------------------------------------------------------------------------
-
-trait EnvelopeWarningExt {
-    fn with_warning_if(self, cond: bool, code: &str, message: &str) -> Self;
-}
-
-impl EnvelopeWarningExt for Envelope {
-    fn with_warning_if(self, cond: bool, code: &str, message: &str) -> Self {
-        if cond {
-            self.with_warning(code, message)
-        } else {
-            self
         }
     }
 }

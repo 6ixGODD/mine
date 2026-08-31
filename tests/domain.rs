@@ -39,6 +39,11 @@ fn node(id: &str, hard: &[&str], excl: &[&str]) -> PlanNode {
         updated_at: String::new(),
         rejection_reason: String::new(),
         compensating_plan: String::new(),
+        withdraw_reason: String::new(),
+        withdrawn_at: String::new(),
+        planning_scope: String::new(),
+        readiness_checked_at: String::new(),
+        adr_registry_revision: 0,
         lineage_id: String::new(),
         worktree_path: String::new(),
     }

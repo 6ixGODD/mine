@@ -65,7 +65,7 @@ Absolute worktree locations and observed Git state are runtime DTO evidence,
 not persisted graph facts. Commands launched from any linked checkout resolve
 and mutate the one authoritative graph in the main integration worktree.
 
-For schema-v3 canonical nodes, `branch_anchor` is empty only in `DRAFT`,
+For schema-v4 canonical nodes, `branch_anchor` is empty only in `DRAFT`,
 `BLOCKED`, `READY`, and `WITHDRAWN` (a withdrawn node never started).
 `IN_PROGRESS`, `IMPLEMENTED`, `ACCEPTED`, and `REJECTED` nodes require a
 non-empty value that Git resolves to a commit. The
@@ -85,8 +85,12 @@ mutation. Recovery of legacy or damaged metadata is an explicit, validated
 operation whose before/after revision is auditable; operators never repair the
 TOML by hand.
 
-The current wire schema is `mine-graph-v3`. The v2-to-v3 provenance migration
-derives `branch_anchor` only from unambiguous Git and recorded graph evidence:
+The current wire schema is `mine-graph-v4`. The v3-to-v4 evolution adds only
+optional node fields (planning scope, release readiness audit, withdrawal
+evidence), so v3 graphs upgrade implicitly on the next lifecycle mutation
+with no field derivation and no extra revision increment. The v2-to-v3
+provenance migration derives `branch_anchor` only from unambiguous Git and
+recorded graph evidence:
 the first parent of the first ordered implementation commit, or for an active
 compensation without implementation commits, its declared rejected
 predecessor's preserved branch tip. Every derived anchor must exist as a commit

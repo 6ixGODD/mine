@@ -1,7 +1,7 @@
 ---
 name: mine-plan-review
 description: Strictly review one implemented repository plan against AGENTS.md, architecture, the immutable plan, implementation commits, real runtime behavior, verification evidence, and downstream contracts. Use when the user invokes the host-specific mine-plan-review skill with a plan path, asks whether a plan can be accepted, requests an acceptance review, or wants review failures classified into direct small fixes versus a new compensating plan. Work in the current workspace; never trust an implementation report or green tests without independent evidence.
-version: 0.1.12
+version: 0.1.13
 ---
 
 # MINE Plan Review
@@ -33,6 +33,10 @@ The accepted MCP tools `mine-plan-review` may use:
 - `mine_plan_reject` (`id`, `reason`, `review_report`,
   `compensating_plan`) - evidence-bound transition from `IMPLEMENTED` or an
   objectively infeasible `IN_PROGRESS` Plan to `REJECTED`.
+- `mine_plan_withdraw` (`id`, `reason`) - owner-authorized retirement of an
+  unstarted (`DRAFT`/`BLOCKED`/`READY`) registration into terminal
+  `WITHDRAWN` (ADR-0012). Withdrawn nodes are retired: they never block
+  workspace closure and are never revived.
 - `mine_graph_validate` (no arguments) - validate the graph after transitions.
 - `mine_design_validate` (no arguments) - confirm design references.
 
@@ -85,6 +89,8 @@ mine-plan-review complete release closure
 **Entry discrimination (executable):** if the invocation argument is exactly `complete release closure`, enter release-closure mode; never resolve that literal as a plan file path. Any other single argument is treated as a Plan path (Plan-review mode). If no argument is supplied in Plan-review mode, ask for a path before mutation.
 
 This mode does **not** require a Plan path and does **not** re-review or re-accept any Plan. It detects the all-terminal graph, verifies the final sync completed, and carries the mechanical closure steps below. It may also be used when the final Plan was already accepted in an earlier session.
+
+`WITHDRAWN` nodes are retired and do not block closure: a graph whose only non-`ACCEPTED` nodes are `WITHDRAWN` is closable, while `REJECTED` nodes still require their accepted compensation chain. A stale unstarted registration encountered during closure is retired explicitly through `mine plan withdraw` (or `mine_plan_withdraw`) with the repository owner's authorization; never hand-edit the graph to drop it.
 
 ## Read the governing evidence
 
