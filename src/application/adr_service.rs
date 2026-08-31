@@ -187,7 +187,7 @@ impl<'a> AdrService<'a> {
 
     pub fn add(&self, req: AdrAddRequest) -> MineResult<AdrRegistry> {
         let store = self.store();
-        let expected = store.load()?.revision;
+        let expected = store.load_or_empty()?.revision;
         store.save_with_revision(expected, move |mut registry| {
             registry.add(AdrEntry {
                 id: req.id,

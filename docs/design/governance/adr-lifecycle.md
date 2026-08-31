@@ -168,6 +168,13 @@ digests. ADR-0007..0009 import the repository-owner approval evidence embedded
 in those files. After import, registry/index mutations use only the binary.
 Bootstrap code and alternate status parsing are removed before stable release.
 
+Ordinary repositories run no import. The first `mine adr add` bootstraps an
+empty registry (schema 1, revision 0 -> 1) under the registry lock, and every
+later mutation uses the normal revision-checked path. Read paths (`adr
+show|list|validate`, `design readiness`) fail with the precise "registry is
+absent" error until that first ADR exists, while the plan-registration gate
+stays fail-open for registry-less repositories by design.
+
 ## Failure and verification
 
 - digest mismatch is a validation failure, not an automatic state mutation;

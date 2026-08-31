@@ -786,8 +786,9 @@ fn node_json(p: &PlanNode) -> Value {
 /// Enforces planning readiness for a scope at registration time (ADR-0013).
 /// The scope is the adapter-resolved planning scope — the explicit
 /// `--planning-scope` value or the configured design-root default — never a
-/// derived lineage id. Repositories without a bootstrapped ADR registry are
-/// left to `mine init` (fail-open by design, matching `AdrService`).
+/// derived lineage id. Repositories without an ADR registry are not gated
+/// (fail-open by design, matching `AdrService`); the registry bootstraps on
+/// the first `mine adr add`.
 fn require_plan_readiness(ctx: &CommandContext, scope: &str) -> MineResult<()> {
     let Some(config) = ctx.config.as_ref() else {
         return Ok(());
