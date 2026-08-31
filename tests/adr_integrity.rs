@@ -520,3 +520,95 @@ fn design_render_repairs_stale_index_and_validate_distinguishes() {
         0
     );
 }
+
+/// An ordinary repository (no MINE bootstrap import) bootstraps its ADR
+/// registry implicitly on the first `adr add`; read paths fail precisely
+/// until then, and the normal lifecycle continues afterwards.
+#[test]
+fn first_adr_add_bootstraps_registry_in_ordinary_repository() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path();
+    copy_tree(&repo_root().join("docs/design"), &repo.join("docs/design"));
+    std::fs::remove_file(repo.join("docs/design/decisions/adr-registry.toml")).unwrap();
+    std::fs::remove_file(repo.join("docs/design/decisions/index.md")).unwrap();
+    std::fs::create_dir_all(repo.join(".mine")).unwrap();
+    std::fs::copy(
+        repo_root().join(".mine/config.toml"),
+        repo.join(".mine/config.toml"),
+    )
+    .unwrap();
+    assert!(
+        !repo
+            .join("docs/design/decisions/adr-registry.toml")
+            .exists()
+    );
+
+    // Read paths fail with the precise absent-registry error before the
+    // first ADR exists.
+    let (code, _out, err) = run_json(repo, &["adr", "list", "--format", "json"]);
+    assert_ne!(code, 0, "{err}");
+    assert!(
+        err.contains("registry is absent; create the first ADR with `mine adr add`"),
+        "{err}"
+    );
+
+    // The first add bootstraps the empty registry and records the DRAFT.
+    std::fs::write(
+        repo.join("docs/design/decisions/9001-ordinary-decision.md"),
+        "# An ordinary decision\n\nBody for the first-add bootstrap test.\n",
+    )
+    .unwrap();
+    let (code, out, _err) = run_json(
+        repo,
+        &[
+            "adr",
+            "add",
+            "--id",
+            "ADR-9001",
+            "--path",
+            "docs/design/decisions/9001-ordinary-decision.md",
+            "--title",
+            "Ordinary decision",
+            "--planning-blocking",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"status\":\"DRAFT\""), "{out}");
+    assert!(
+        repo.join("docs/design/decisions/adr-registry.toml")
+            .exists()
+    );
+
+    // The normal lifecycle continues on the bootstrapped registry.
+    assert_eq!(
+        run(
+            repo,
+            &["adr", "propose", "--id", "ADR-9001", "--format", "json"]
+        ),
+        0
+    );
+    assert_eq!(
+        run(
+            repo,
+            &[
+                "adr",
+                "approve",
+                "--id",
+                "ADR-9001",
+                "--by",
+                "owner",
+                "--note",
+                "first-add bootstrap test",
+                "--format",
+                "json"
+            ]
+        ),
+        0
+    );
+    let (code, out, _err) = run_json(repo, &["design", "readiness", "--format", "json"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("\"ready\":true"), "{out}");
+    assert_eq!(run(repo, &["adr", "validate", "--format", "json"]), 0);
+}

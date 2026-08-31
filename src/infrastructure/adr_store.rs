@@ -48,8 +48,7 @@ impl AdrStore {
         if !self.registry_path.exists() {
             return Err(MineError::AdrRegistryInvalid {
                 path: self.registry_path.clone(),
-                detail: "registry is absent; run `mine init` for the one-time bootstrap"
-                    .to_string(),
+                detail: "registry is absent; create the first ADR with `mine adr add`".to_string(),
             });
         }
         let content = std::fs::read_to_string(&self.registry_path)?;
@@ -67,6 +66,17 @@ impl AdrStore {
         Ok(registry)
     }
 
+    /// Loads the registry, or returns the empty registry when it does not
+    /// exist yet. An ordinary repository bootstraps its registry implicitly
+    /// on the first `mine adr add` (revision 0 -> 1); read paths keep
+    /// failing through `load` until then.
+    pub fn load_or_empty(&self) -> MineResult<AdrRegistry> {
+        if self.registry_path.exists() {
+            return self.load();
+        }
+        Ok(AdrRegistry::empty())
+    }
+
     /// Applies one registry mutation under its dedicated lock and revision.
     pub fn save_with_revision(
         &self,
@@ -74,7 +84,7 @@ impl AdrStore {
         mutate: impl FnOnce(AdrRegistry) -> MineResult<AdrRegistry>,
     ) -> MineResult<AdrRegistry> {
         let _lock = file_lock::acquire_exclusive(&self.lock_path, self.lock_timeout)?;
-        let current = self.load()?;
+        let current = self.load_or_empty()?;
         if current.revision != expected_revision {
             return Err(MineError::RevisionConflict {
                 expected: expected_revision,
