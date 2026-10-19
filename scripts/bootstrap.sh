@@ -42,9 +42,15 @@ fetch() {
     --connect-timeout 10 --max-time 90 --retry 0 --max-filesize "$byte_limit" \
     --dump-header "$stage/headers" --output "$output" --write-out '%{http_code}\n%{url_effective}'
   [ "$mode" != head ] || set -- "$@" --head
-  # ulimit also bounds chunked responses on older curl versions. Native tar
-  # subprocesses below similarly limit CPU and listing/output file growth.
-  (ulimit -f "$((byte_limit / 512 + 2))"; curl "$@" "$request_url") >"$stage/result" || die "network/timeout/oversized response; no automatic retry"
+  # The per-file limit also applies to curl's redirect headers and result, not
+  # just the body. Leave bounded metadata room even for a tiny checksum body;
+  # keep max-filesize and the exact final body check for older/chunked curl.
+  metadata_limit=1048576
+  file_limit="$byte_limit"
+  [ "$file_limit" -ge "$metadata_limit" ] || file_limit="$metadata_limit"
+  (ulimit -f "$((file_limit / 512 + 2))"; curl "$@" "$request_url") >"$stage/result" || die "network/timeout/oversized response; no automatic retry"
+  [ "$(wc -c <"$stage/headers" | tr -d ' ')" -le "$metadata_limit" ] &&
+    [ "$(wc -c <"$stage/result" | tr -d ' ')" -le "$metadata_limit" ] || die "response metadata exceeded byte limit"
   status="$(sed -n '1p' "$stage/result")"
   case "$status" in
     200) ;;

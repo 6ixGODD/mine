@@ -253,7 +253,8 @@ def transport(argv):
     if spec.get("network_exit"):
         return spec["network_exit"]
     status = spec.get("sum_status", spec.get("status", 200)) if checksum else spec.get("status", 200)
-    headers.write_text(spec.get("headers", ""), encoding="ascii")
+    headers.write_text(spec.get("checksum_headers", spec.get("headers", ""))
+                       if checksum else spec.get("headers", ""), encoding="ascii")
     if latest or status != 200:
         output.write_bytes(b"")
     else:
@@ -331,6 +332,8 @@ def native_smoke(binary, archive, output, row, product_source=ROOT, identity=Non
              "truncated", "traversal", "link", "duplicate", "wrong-platform", "wrong-version",
              "malformed-latest", "interrupted", "agent-failure", "refresh-success", "refresh-failure"]
     cases += ["locked-old"] if row["os"] == "windows" else ["unsupported"]
+    if row["os"] != "windows":
+        cases += ["large-redirect-headers", "oversized-checksum", "oversized-metadata", "header-file-limit"]
     results = []
     for case in cases:
         fixture = Path(tempfile.mkdtemp(prefix=case + "-", dir=output))
@@ -338,7 +341,7 @@ def native_smoke(binary, archive, output, row, product_source=ROOT, identity=Non
         bin_dir.mkdir()
         destination = bin_dir / row["binary"]
         old = binary.read_bytes()  # already version-verified, genuinely usable old executable
-        happy = case in ("pinned", "latest", "refresh-success", "refresh-failure")
+        happy = case in ("pinned", "latest", "refresh-success", "refresh-failure", "large-redirect-headers")
         if not happy and case != "agent-failure":
             destination.write_bytes(old)
             if row["os"] != "windows":
@@ -366,6 +369,17 @@ def native_smoke(binary, archive, output, row, product_source=ROOT, identity=Non
         if case == "missing-checksum":
             spec["sum_status"] = 404
             diagnostic = "no published release"
+        if case == "large-redirect-headers":
+            # The checksum body is tiny; curl also writes every redirect header.
+            spec["checksum_headers"] = "x-redirect-chain: " + "a" * 8192 + "\r\n"
+        if case == "oversized-checksum":
+            # The transport deliberately ignores max-filesize, like older curl
+            # on unknown-length bodies: the final 4096-byte check must refuse it.
+            (fixture / "checksum").write_bytes(b"a" * 4097)
+            diagnostic = "response exceeded byte limit"
+        if case in ("oversized-metadata", "header-file-limit"):
+            spec["checksum_headers"] = "a" * (1048577 if case == "oversized-metadata" else 2097152)
+            diagnostic = "response metadata exceeded byte limit" if case == "oversized-metadata" else "network/timeout/oversized response"
         if case == "wrong-checksum-name":
             (fixture / "checksum").write_text(f"{digest(local_archive)}  other.zip\n")
             diagnostic = "checksum"
