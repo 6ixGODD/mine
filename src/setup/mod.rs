@@ -30,6 +30,8 @@
 
 pub mod agent_detect;
 pub mod banner;
+pub mod delivery;
+pub mod platform;
 pub mod release_meta;
 pub mod selector;
 pub mod self_update;
@@ -192,17 +194,19 @@ pub fn run_update(args: &UpdateArgs) -> MineResult<UpdateReport> {
                 }
             }
             let to = tag.clone();
-            self_update::download_and_replace(&to)?;
+            let replacement = self_update::download_and_replace(&to)?;
             // The on-disk binary is now the NEW version. Re-run it in
             // refresh-only mode so installed Agent Skills are rewritten from
             // the new binary's embedded payload (this process still runs the
             // OLD binary, whose embedded payload is stale).
-            let (skills_refreshed, skills_errors) = refresh_installed_after_update(args);
+            let (skills_refreshed, skills_errors) =
+                refresh_installed_after_update(args, &replacement.destination);
+            let note = update_note(replacement.cleanup_pending.as_deref(), &skills_errors);
             Ok(UpdateReport {
                 from: current.to_string(),
                 to,
                 updated: true,
-                note: "updated".to_string(),
+                note,
                 skills_refreshed,
                 skills_errors,
             })
@@ -225,24 +229,43 @@ pub fn run_update(args: &UpdateArgs) -> MineResult<UpdateReport> {
 /// entry point, waits for it, and returns (refreshed slugs, per-Agent errors).
 /// A spawn/parse failure is reported as a refresh error, never as an update
 /// failure: the binary update itself already succeeded.
-fn refresh_installed_after_update(args: &UpdateArgs) -> (Vec<String>, Vec<String>) {
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(e) => return (Vec::new(), vec![format!("current exe: {e}")]),
-    };
-    let mut cmd = std::process::Command::new(&exe);
+fn update_note(pending: Option<&str>, errors: &[String]) -> String {
+    let mut note = if errors.is_empty() {
+        "binary updated; Agent refresh completed"
+    } else {
+        "binary updated; Agent refresh incomplete (see skills_errors)"
+    }
+    .to_string();
+    if let Some(pending) = pending {
+        note.push_str("; ");
+        note.push_str(pending);
+    }
+    note
+}
+
+fn refresh_installed_after_update(
+    args: &UpdateArgs,
+    exe: &std::path::Path,
+) -> (Vec<String>, Vec<String>) {
+    let mut cmd = std::process::Command::new(exe);
     cmd.arg("--format").arg("json").arg("__refresh-skills");
     if let Some(root) = &args.config_root {
         cmd.arg("--config-root").arg(root);
     }
-    let out = match cmd.output() {
+    let out = match bounded_refresh_output(&mut cmd) {
         Ok(o) => o,
-        Err(e) => return (Vec::new(), vec![format!("refresh spawn failed: {e}")]),
+        Err(e) => return (Vec::new(), vec![format!("refresh failed: {e}")]),
     };
     let stdout = String::from_utf8_lossy(&out.stdout);
     let report = parse_refresh_report(stdout.trim());
     match report {
-        Some(r) => (r.refreshed, r.errors),
+        Some(mut r) => {
+            if !out.status.success() {
+                r.errors
+                    .push(format!("refresh process failed: {}", out.status));
+            }
+            (r.refreshed, r.errors)
+        }
         None => (
             Vec::new(),
             vec![format!(
@@ -252,6 +275,78 @@ fn refresh_installed_after_update(args: &UpdateArgs) -> (Vec<String>, Vec<String
             )],
         ),
     }
+}
+
+/// A verified child can still fail/hang. Bound memory and wall time separately
+/// from binary replacement, and never let its failure erase replacement truth.
+fn bounded_refresh_output(cmd: &mut std::process::Command) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::process::Stdio;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    use std::time::{Duration, Instant};
+    const LIMIT: usize = 64 * 1024;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let exceeded = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel();
+    for (index, mut pipe) in [
+        Box::new(child.stdout.take().ok_or("missing stdout")?) as Box<dyn Read + Send>,
+        Box::new(child.stderr.take().ok_or("missing stderr")?),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let tx = tx.clone();
+        let exceeded = exceeded.clone();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = pipe.by_ref().take(LIMIT as u64 + 1).read_to_end(&mut bytes);
+            if bytes.len() > LIMIT {
+                exceeded.store(true, Ordering::Relaxed);
+                bytes.truncate(LIMIT);
+            }
+            let _ = tx.send((index, result.map(|_| bytes)));
+        });
+    }
+    drop(tx);
+    let start = Instant::now();
+    let mut captured = [None, None];
+    let result = (|| {
+        loop {
+            while let Ok((index, result)) = rx.try_recv() {
+                captured[index] = Some(result.map_err(|e| e.to_string())?);
+            }
+            if exceeded.load(Ordering::Relaxed) {
+                return Err("output exceeded 64 KiB per stream".into());
+            }
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                if let [Some(stdout), Some(stderr)] = &mut captured {
+                    return Ok(std::process::Output {
+                        status,
+                        stdout: std::mem::take(stdout),
+                        stderr: std::mem::take(stderr),
+                    });
+                }
+            }
+            if start.elapsed() >= Duration::from_secs(30) {
+                return Err("timed out after 30 seconds".into());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() && child.try_wait().map_err(|e| e.to_string())?.is_none() {
+        child.kill().map_err(|e| e.to_string())?;
+        child.wait().map_err(|e| e.to_string())?;
+    }
+    result
 }
 
 /// Runs `mine uninstall`: remove MINE from every agent, then remove the
@@ -360,6 +455,9 @@ pub use crate::agent_setup::targets::Env as SetupEnv;
 /// object is also accepted for robustness.
 fn parse_refresh_report(stdout: &str) -> Option<crate::application::agent_service::RefreshReport> {
     let value: serde_json::Value = serde_json::from_str(stdout).ok()?;
+    if value.get("ok").is_some_and(|ok| ok != true) {
+        return None;
+    }
     let data = value.get("data").cloned().unwrap_or(value);
     serde_json::from_value(data).ok()
 }
@@ -390,5 +488,62 @@ mod tests {
     #[test]
     fn rejects_garbage() {
         assert!(parse_refresh_report("not json").is_none());
+        assert!(
+            parse_refresh_report(
+                r#"{"ok":false,"data":{"mine_version":"0.1.13","refreshed":[],"errors":[]}}"#
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn partial_update_never_claims_complete() {
+        assert!(super::update_note(None, &["failed".into()]).contains("incomplete"));
+        assert!(super::update_note(Some("cleanup pending"), &[]).contains("cleanup pending"));
+    }
+
+    #[test]
+    fn refresh_output_is_bounded_and_nonzero_status_is_preserved() {
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = std::process::Command::new("powershell.exe");
+            c.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[Console]::Write('x'*70000)",
+            ]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "printf '%70000s' x"]);
+            c
+        };
+        assert!(
+            super::bounded_refresh_output(&mut command)
+                .unwrap_err()
+                .contains("64 KiB")
+        );
+        #[cfg(windows)]
+        let mut command = {
+            let mut c = std::process::Command::new("cmd.exe");
+            c.args(["/C", "exit 7"]);
+            c
+        };
+        #[cfg(unix)]
+        let mut command = {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", "exit 7"]);
+            c
+        };
+        assert_eq!(
+            super::bounded_refresh_output(&mut command)
+                .unwrap()
+                .status
+                .code(),
+            Some(7)
+        );
     }
 }

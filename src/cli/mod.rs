@@ -56,11 +56,30 @@ impl HandlerError {
     /// Builds a handler error from a domain error, mapping it to the public
     /// exit-code contract.
     pub fn from_mine(err: &crate::domain::error::MineError) -> Self {
+        let details = match err {
+            crate::domain::error::MineError::GraphCheckpointPending {
+                operation,
+                revision_after,
+                ..
+            } => {
+                serde_json::json!({"operation_id":operation.fields().operation_id,"operation":operation,
+                    "revision_before":operation.fields().observed_graph_revision,"revision_after":revision_after,
+                    "recovery_required":true})
+            }
+            crate::domain::error::MineError::GraphCommitted {
+                revision_before,
+                revision_after,
+                ..
+            } => {
+                serde_json::json!({"committed": true, "repair_needed": true, "revision_before": revision_before, "revision_after": revision_after})
+            }
+            _ => serde_json::Value::Null,
+        };
         Self {
             code: err.code(),
             message: format!("{err}"),
             exit_code: crate::output::exit_code_for(err),
-            details: serde_json::Value::Null,
+            details,
         }
     }
 
@@ -89,6 +108,7 @@ pub struct ParsedArgs {
 ///
 /// `program` is the binary name used in usage messages.
 pub fn dispatch(argv: &[String], _program: &str) -> Outcome {
+    let _request = crate::infrastructure::git_evidence::GitRequestScope::new();
     // Clap owns --help/--version: it prints colored help and exits directly.
     // For everything else we parse into our model, build the rest-token vector
     // the existing handlers expect, and route through commands::handle so the
@@ -168,12 +188,94 @@ fn command_route(cmd: &Commands) -> (&'static str, &'static str, Vec<String>, &'
         Commands::Workspace { action } => workspace_route(action),
         Commands::Graph { action } => graph_route(action),
         Commands::Plan { action } => plan_route(action),
+        Commands::Operation { action } => match action {
+            OperationCmd::Finalize {
+                expected_revision,
+                input,
+            } => (
+                "operation",
+                "finalize",
+                vec![
+                    "--expected-revision".into(),
+                    expected_revision.to_string(),
+                    "--input".into(),
+                    input.clone(),
+                ],
+                "operation.finalize",
+            ),
+            OperationCmd::Stage {
+                expected_revision,
+                input,
+            } => (
+                "operation",
+                "stage",
+                vec![
+                    "--expected-revision".into(),
+                    expected_revision.to_string(),
+                    "--input".into(),
+                    input.clone(),
+                ],
+                "operation.stage",
+            ),
+            OperationCmd::Begin {
+                expected_revision,
+                input,
+            } => (
+                "operation",
+                "begin",
+                vec![
+                    "--expected-revision".into(),
+                    expected_revision.to_string(),
+                    "--input".into(),
+                    input.clone(),
+                ],
+                "operation.begin",
+            ),
+            OperationCmd::Show { operation_id } => (
+                "operation",
+                "show",
+                vec!["--operation-id".into(), operation_id.clone()],
+                "operation.show",
+            ),
+        },
+        Commands::Verification { action } => match action {
+            VerificationCmd::Capture { input } => (
+                "verification",
+                "capture",
+                vec!["--input".into(), input.clone()],
+                "verification.capture",
+            ),
+            VerificationCmd::Record { input } => (
+                "verification",
+                "record",
+                vec!["--input".into(), input.clone()],
+                "verification.record",
+            ),
+            VerificationCmd::Check {
+                receipt,
+                input,
+                policy,
+            } => {
+                let mut flags = vec![
+                    "--receipt".into(),
+                    receipt.clone(),
+                    "--input".into(),
+                    input.clone(),
+                ];
+                push_opt(&mut flags, "policy", policy.as_deref());
+                ("verification", "check", flags, "verification.check")
+            }
+        },
         Commands::Design { action } => design_route(action),
         Commands::Adr { action } => adr_route(action),
         Commands::Agent { action } => agent_route(action),
         Commands::Repository { action } => repository_route(action),
         Commands::Dist { action } => dist_route(action),
-        Commands::Release => ("release", "", vec![], "release"),
+        Commands::Release { operation_id } => {
+            let mut flags = vec![];
+            push_opt(&mut flags, "operation-id", operation_id.as_deref());
+            ("release", "", flags, "release")
+        }
         Commands::Scan { action } => scan_route(action),
         Commands::Mcp { action } => mcp_route(action),
     }
@@ -295,7 +397,20 @@ fn yes_tokens(yes: bool) -> Vec<String> {
 
 fn workspace_route(a: &WorkspaceCmd) -> (&'static str, &'static str, Vec<String>, &'static str) {
     match a {
-        WorkspaceCmd::Open => ("workspace", "open", vec![], "workspace.open"),
+        WorkspaceCmd::Open {
+            actor,
+            expected_revision,
+        } => (
+            "workspace",
+            "open",
+            vec![
+                "--actor".into(),
+                actor.clone(),
+                "--expected-revision".into(),
+                expected_revision.to_string(),
+            ],
+            "workspace.open",
+        ),
         WorkspaceCmd::Status => ("workspace", "status", vec![], "workspace.status"),
         WorkspaceCmd::Close => ("workspace", "close", vec![], "workspace.close"),
     }
@@ -304,15 +419,45 @@ fn workspace_route(a: &WorkspaceCmd) -> (&'static str, &'static str, Vec<String>
 fn graph_route(a: &GraphCmd) -> (&'static str, &'static str, Vec<String>, &'static str) {
     match a {
         GraphCmd::Validate => ("graph", "validate", vec![], "graph.validate"),
-        GraphCmd::Render => ("graph", "render", vec![], "graph.render"),
-        GraphCmd::RepairProvenance { expected_revision } => (
+        GraphCmd::Render { expected_revision } => (
+            "graph",
+            "render",
+            vec!["--expected-revision".into(), expected_revision.to_string()],
+            "graph.render",
+        ),
+        GraphCmd::RepairProvenance {
+            expected_revision,
+            actor,
+        } => (
             "graph",
             "repair-provenance",
             vec![
+                "--actor".into(),
+                actor.clone(),
                 "--expected-revision".to_string(),
                 expected_revision.to_string(),
             ],
             "graph.repair-provenance",
+        ),
+        GraphCmd::RepairCompensationPredecessors {
+            id,
+            expected_revision,
+            reason,
+            actor,
+        } => (
+            "graph",
+            "repair-compensation-predecessors",
+            vec![
+                "--actor".into(),
+                actor.clone(),
+                "--id".to_string(),
+                id.clone(),
+                "--expected-revision".to_string(),
+                expected_revision.to_string(),
+                "--reason".to_string(),
+                reason.clone(),
+            ],
+            "graph.repair-compensation-predecessors",
         ),
         GraphCmd::Status => ("graph", "status", vec![], "graph.status"),
         GraphCmd::Ready => ("graph", "ready", vec![], "graph.ready"),
@@ -329,6 +474,13 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
     match a {
         PlanCmd::Add(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(&mut v, "ownership-input", a.ownership_input.as_deref());
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             push_opt(&mut v, "path", Some(&a.path));
             push_opt(&mut v, "title", Some(&a.title));
@@ -347,6 +499,19 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
             push_opt(&mut v, "planning-scope", a.planning_scope.as_deref());
             ("plan", "add", v, "plan.add")
         }
+        PlanCmd::Clarify(a) => (
+            "plan",
+            "clarify",
+            vec![
+                "--id".into(),
+                a.id.clone(),
+                "--expected-revision".into(),
+                a.expected_revision.to_string(),
+                "--input".into(),
+                a.input.clone(),
+            ],
+            "plan.clarify",
+        ),
         PlanCmd::Show(a) => {
             let mut v = Vec::new();
             push_opt(&mut v, "id", Some(&a.id));
@@ -355,17 +520,37 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
         PlanCmd::Prepare(a) => {
             let mut v = Vec::new();
             push_opt(&mut v, "id", Some(&a.id));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
+            push_opt(&mut v, "operation-id", Some(&a.operation_id));
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_bool(&mut v, "reprepare", a.reprepare);
+            push_bool(&mut v, "recover-preparation", a.recover_preparation);
             ("plan", "prepare", v, "plan.prepare")
         }
         PlanCmd::Start(a) => {
             let mut v = Vec::new();
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
-            push_opt(&mut v, "owner", a.owner.as_deref());
+            push_opt(&mut v, "owner", Some(&a.owner));
             push_opt(&mut v, "run-id", a.run_id.as_deref());
             ("plan", "start", v, "plan.start")
         }
         PlanCmd::Implemented(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             push_opt(&mut v, "report", Some(&a.report));
             for c in &a.commit {
@@ -376,12 +561,24 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
         }
         PlanCmd::Accept(a) => {
             let mut v = Vec::new();
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
-            push_opt(&mut v, "review", a.review.as_deref());
+            push_opt(&mut v, "operation-id", Some(&a.operation_id));
+            push_opt(&mut v, "input", Some(&a.input));
             ("plan", "accept", v, "plan.accept")
         }
         PlanCmd::Reject(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             push_opt(&mut v, "compensating-plan", a.compensating_plan.as_deref());
             push_opt(&mut v, "reason", a.reason.as_deref());
@@ -390,16 +587,35 @@ fn plan_route(a: &PlanCmd) -> (&'static str, &'static str, Vec<String>, &'static
         }
         PlanCmd::Release(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             ("plan", "release", v, "plan.release")
         }
         PlanCmd::RewireCompensation(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             ("plan", "rewire-compensation", v, "plan.rewire-compensation")
         }
         PlanCmd::Withdraw(a) => {
             let mut v = Vec::new();
+            push_opt(&mut v, "operation-id", Some(&a.operation_id));
+            push_opt(&mut v, "actor", Some(&a.actor));
+            push_opt(
+                &mut v,
+                "expected-revision",
+                Some(&a.expected_revision.to_string()),
+            );
             push_opt(&mut v, "id", Some(&a.id));
             push_opt(&mut v, "reason", Some(&a.reason));
             ("plan", "withdraw", v, "plan.withdraw")

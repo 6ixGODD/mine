@@ -13,8 +13,7 @@
 //! `PlanStatus::validate_transition` / `validation::hard_predecessors_accepted`.
 
 use std::collections::HashSet;
-use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::application::graph_service::{
     GraphService, PlanAcceptRequest, PlanAddRequest, PlanImplementedRequest, PlanRejectRequest,
@@ -23,11 +22,11 @@ use crate::application::graph_service::{
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::graph::{PlanNode, PlanWorkspace};
 use crate::domain::plan_id::{
-    CanonicalPlanId, registered_plan_branch, validate_compensation_replacement, validate_plan_path,
+    CanonicalPlanId, registered_plan_branch, validate_compensation_replacement,
 };
 use crate::domain::status::PlanStatus;
 use crate::domain::validation;
-use crate::infrastructure::git::{self, WorktreeInfo};
+use crate::infrastructure::git::WorktreeInfo;
 
 fn refusal(detail: impl Into<String>) -> MineError {
     MineError::GraphInvalid {
@@ -35,222 +34,597 @@ fn refusal(detail: impl Into<String>) -> MineError {
     }
 }
 
-fn git_evidence(plan_id: &str, detail: impl Into<String>) -> MineError {
-    MineError::GitEvidence {
-        plan_id: plan_id.to_string(),
-        detail: detail.into(),
-    }
+/// Untrusted selectors/declarations, never caller-authored approval facts.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticRegistrationInput {
+    pub policy_path: crate::domain::graph::RepoPath,
+    pub approving_adr: String,
+    pub ownership: crate::domain::ownership::OwnershipContract,
 }
 
-/// Provably-lossless Git cleanup for withdrawing an unstarted plan
-/// (ADR-0012). All evidence is verified before any Git mutation:
-/// - `DRAFT`/`BLOCKED` must have no Git artifacts at all (an unstarted
-///   registration with a live branch/worktree is inconsistent state);
-/// - a `READY` base plan's branch tip must equal or be an ancestor of the
-///   integration branch tip, then the clean linked worktree (if attached) is
-///   removed and the branch deleted with `-d`;
-/// - a `READY` compensation's tip must equal its rejected predecessor's
-///   preserved tip exactly, then cleanup deletes with `-D` after that proof;
-/// - a `READY` node that was never prepared (no branch, no worktree) needs no
-///   Git operation at all.
-///
-/// Returns whether Git artifacts were removed.
-fn withdraw_cleanup(workspace: &PlanWorkspace, node: &PlanNode, root: &Path) -> MineResult<bool> {
-    // Legacy fixture nodes carry no canonical provenance.
-    if node.branch.is_empty() && node.worktree_path.is_empty() {
-        return Ok(false);
-    }
-    let inventory = git::list_worktrees(root)?;
-    let attached = inventory
-        .iter()
-        .skip(1)
-        .find(|worktree| same_path(&worktree.path, &root.join(&node.worktree_path)));
-    let branch_exists = git::branch_exists(root, &node.branch);
-    match node.status {
-        PlanStatus::Draft | PlanStatus::Blocked => {
-            if branch_exists || attached.is_some() {
-                return Err(refusal(format!(
-                    "plan {} in status {} has existing Git artifacts (branch/worktree); inconsistent state",
-                    node.id,
-                    node.status.as_str()
-                )));
-            }
-            Ok(false)
-        }
-        PlanStatus::Ready => {
-            if !branch_exists && attached.is_none() {
-                return Ok(false);
-            }
-            if !branch_exists {
-                return Err(git_evidence(
-                    &node.id,
-                    "registered branch is missing while a worktree is attached",
-                ));
-            }
-            let tip = git::head_of_branch(root, &node.branch)?;
-            let force_delete = if CanonicalPlanId::parse(&node.id)?.is_compensation() {
-                let predecessor = workspace
-                    .plans
-                    .iter()
-                    .find(|candidate| {
-                        candidate.compensating_plan == node.id
-                            && candidate.status == PlanStatus::Rejected
-                            && candidate.lineage_id == node.lineage_id
-                    })
-                    .ok_or_else(|| {
-                        refusal("compensation is not declared by a rejected predecessor")
-                    })?;
-                validate_compensation_replacement(&predecessor.id, &node.id)?;
-                let preserved = git::head_of_branch(root, &predecessor.branch)?;
-                if tip != preserved {
-                    return Err(git_evidence(
-                        &node.id,
-                        format!(
-                            "branch tip {tip} does not equal the rejected predecessor's preserved tip {preserved}"
-                        ),
-                    ));
-                }
-                true
-            } else {
-                let integration_tip = git::head_of_branch(root, &workspace.integration_branch)?;
-                if tip != integration_tip
-                    && !git::is_ancestor_checked(root, &tip, &integration_tip)?
-                {
-                    return Err(git_evidence(
-                        &node.id,
-                        format!(
-                            "branch tip {tip} diverged from integration branch {}",
-                            workspace.integration_branch
-                        ),
-                    ));
-                }
-                false
-            };
-            if let Some(observed) = attached {
-                if observed.branch.as_deref() != Some(node.branch.as_str()) {
-                    return Err(git_evidence(
-                        &node.id,
-                        "registered worktree is checked out on a different branch",
-                    ));
-                }
-                let worktree_path = Path::new(&observed.path);
-                if !git::is_clean(worktree_path) {
-                    return Err(git_evidence(&node.id, "linked worktree is dirty"));
-                }
-                git::remove_worktree(root, worktree_path)?;
-            }
-            git::delete_branch(root, &node.branch, force_delete)?;
-            Ok(true)
-        }
-        _ => unreachable!("withdraw gate restricts to unstarted statuses"),
-    }
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SemanticClarificationInput {
+    pub policy_path: crate::domain::graph::RepoPath,
+    pub approving_adr: String,
+    pub plan: crate::domain::graph::PlanIdentity,
+    pub actor: String,
+    pub reason: String,
+    pub kind: crate::domain::ownership::ClarificationKind,
+    pub expected_tail: Option<crate::domain::graph::Sha256>,
+    pub physical_mapping: Vec<crate::domain::graph::RepoPath>,
+    pub generators: Vec<crate::domain::ownership::GeneratorTransaction>,
+    /// Present only for explicit first activation; never replaces a baseline.
+    #[serde(default)]
+    pub baseline: Option<crate::domain::ownership::OwnershipContract>,
 }
 
-fn same_path(observed: &str, target: &Path) -> bool {
-    PathBuf::from(observed)
-        .canonicalize()
-        .is_ok_and(|path| path == target)
+pub struct PlanClarifyRequest {
+    pub id: String,
+    pub expected_revision: u64,
+    pub input: String,
+    pub updated_at: String,
 }
 
-fn resolve_with_missing_tail(path: &Path) -> MineResult<PathBuf> {
-    let mut cursor = path;
-    let mut missing = Vec::<OsString>::new();
-    loop {
-        match cursor.symlink_metadata() {
-            Ok(_) => break,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let name = cursor
-                    .file_name()
-                    .ok_or_else(|| refusal("registered worktree path has no existing ancestor"))?;
-                missing.push(name.to_os_string());
-                cursor = cursor
-                    .parent()
-                    .ok_or_else(|| refusal("registered worktree path has no existing ancestor"))?;
-            }
-            Err(error) => return Err(error.into()),
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyBinding {
+    schema_version: u32,
+    policy_path: crate::domain::graph::RepoPath,
+    policy_sha256: crate::domain::graph::Sha256,
+}
+
+struct ObservedOwnershipPolicy {
+    policy: crate::domain::ownership::ApprovedOwnershipPolicy,
+    provenance: crate::domain::graph::OwnershipPolicyProvenance,
+    registry_sha256: crate::domain::graph::Sha256,
+    approving_entry: crate::domain::adr::AdrEntry,
+    scope: String,
+}
+
+fn contained_bytes(root: &Path, relative: &crate::domain::graph::RepoPath) -> MineResult<Vec<u8>> {
+    let path = crate::infrastructure::operation_store::regular_path(root, relative)?;
+    crate::infrastructure::operation_store::read_bounded(&path)
+        .map_err(|error| refusal(format!("contained evidence unavailable: {error}")))
+}
+
+pub(crate) fn root_configuration(root: &Path) -> MineResult<crate::domain::config::MineConfig> {
+    use crate::domain::{design_marker, graph::RepoPath};
+    let relative = RepoPath::new(".mine/config.toml").expect("constant relative path");
+    let bytes = contained_bytes(root, &relative)?;
+    let config = crate::domain::config::MineConfig::parse(
+        &root.join(relative.as_str()),
+        std::str::from_utf8(&bytes).map_err(|_| refusal("configuration encoding"))?,
+    )?;
+    config.layout()?;
+    uuid::Uuid::parse_str(&config.repository_id).map_err(|_| refusal("repository UUID invalid"))?;
+    let marker_relative =
+        RepoPath::new(config.design.marker.clone()).map_err(|e| refusal(e.to_string()))?;
+    let marker_bytes = contained_bytes(root, &marker_relative)?;
+    let marker_path = root.join(marker_relative.as_str());
+    let marker = design_marker::DesignMarker::parse(
+        &marker_path,
+        std::str::from_utf8(&marker_bytes).map_err(|_| refusal("Design marker encoding"))?,
+    )?;
+    let design_index =
+        RepoPath::new(config.design.root.clone()).map_err(|e| refusal(e.to_string()))?;
+    let index = crate::infrastructure::operation_store::regular_path(root, &design_index)?;
+    if !index.is_file() {
+        return Err(refusal("Design index missing"));
+    }
+    design_marker::classify(
+        index
+            .parent()
+            .ok_or_else(|| refusal("Design root invalid"))?,
+        &marker_path,
+        true,
+        true,
+        Some(&marker),
+        Some(&config.repository_id),
+    )?;
+    Ok(config)
+}
+
+pub(crate) fn observe_planning_readiness(
+    root: &Path,
+    scope: &str,
+    checked_at: &str,
+) -> MineResult<crate::domain::plan_release::ReleaseReadinessAudit> {
+    use crate::domain::graph::RepoPath;
+    let config_relative = RepoPath::new(".mine/config.toml").expect("constant path");
+    let mut registry_revision = 0;
+    if root.join(config_relative.as_str()).exists() {
+        let bytes = contained_bytes(root, &config_relative)?;
+        let config = crate::domain::config::MineConfig::parse(
+            &root.join(config_relative.as_str()),
+            std::str::from_utf8(&bytes).map_err(|_| refusal("configuration encoding"))?,
+        )?;
+        let registry =
+            RepoPath::new(config.adr.registry.clone()).map_err(|e| refusal(e.to_string()))?;
+        let path = crate::infrastructure::operation_store::regular_path(root, &registry)?;
+        if path.exists() {
+            let service = crate::application::adr_service::AdrService::new(root, &config);
+            service.require_planning_ready(scope)?;
+            registry_revision = service.validate()?.revision;
         }
     }
-    let mut resolved = cursor.canonicalize()?;
-    if !resolved.is_dir() {
+    Ok(crate::domain::plan_release::ReleaseReadinessAudit {
+        planning_scope: scope.to_string(),
+        checked_at: checked_at.to_string(),
+        adr_registry_revision: registry_revision,
+    })
+}
+
+fn ownership_policy_binding(body: &[u8]) -> MineResult<PolicyBinding> {
+    use pulldown_cmark::{CodeBlockKind, Event, Parser, Tag, TagEnd};
+    let text = std::str::from_utf8(body).map_err(|_| refusal("ADR body encoding"))?;
+    let mut binding = None;
+    let mut capture: Option<String> = None;
+    // Parse Markdown events, not marker substrings inside quoted examples or
+    // larger literal fences. Only the exact fenced-block info string binds.
+    for event in Parser::new(text) {
+        match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info)))
+                if info.as_ref() == "mine-ownership-policy" =>
+            {
+                if binding.is_some() || capture.is_some() {
+                    return Err(refusal("duplicate ownership policy binding"));
+                }
+                capture = Some(String::new());
+            }
+            Event::Text(content) if capture.is_some() => {
+                capture
+                    .as_mut()
+                    .expect("capture checked")
+                    .push_str(&content);
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(json) = capture.take() {
+                    let parsed: PolicyBinding = serde_json::from_str(&json)
+                        .map_err(|_| refusal("invalid ownership policy binding keys/schema"))?;
+                    if parsed.schema_version != 1 {
+                        return Err(refusal("unsupported ownership policy binding version"));
+                    }
+                    binding = Some(parsed);
+                }
+            }
+            _ => {}
+        }
+    }
+    binding.ok_or_else(|| refusal("approved ADR has no exact ownership policy binding"))
+}
+
+fn observe_ownership_policy(
+    root: &Path,
+    workspace: &PlanWorkspace,
+    policy_path: &crate::domain::graph::RepoPath,
+    approving_adr: &str,
+    scope: &str,
+    persisted: Option<&crate::domain::graph::OwnershipPolicyProvenance>,
+) -> MineResult<ObservedOwnershipPolicy> {
+    use crate::domain::{adr::AdrStatus, graph::*, ownership::*};
+    use crate::infrastructure::graph_checkpoint::digest;
+    let config = root_configuration(root)?;
+    let design_index =
+        RepoPath::new(config.design.root.clone()).map_err(|e| refusal(e.to_string()))?;
+    let design_dir = Path::new(design_index.as_str())
+        .parent()
+        .and_then(Path::to_str)
+        .ok_or_else(|| refusal("Design root invalid"))?;
+    if !crate::domain::path::is_within(design_dir, policy_path.as_str()) {
+        return Err(refusal("ownership policy must be within configured Design"));
+    }
+    let registry_path =
+        RepoPath::new(config.adr.registry.clone()).map_err(|e| refusal(e.to_string()))?;
+    let registry_before = contained_bytes(root, &registry_path)?;
+    let registry = crate::infrastructure::adr_store::AdrStore::new(root, &config.adr).load()?;
+    let entry = registry
+        .get(approving_adr)
+        .ok_or_else(|| refusal("policy approving ADR missing"))?;
+    if entry.status != AdrStatus::APPROVED || !entry.applies_to(Some(scope)) {
         return Err(refusal(
-            "registered worktree path has a non-directory ancestor",
+            "policy ADR is not currently approved for this scope",
         ));
     }
-    for component in missing.into_iter().rev() {
-        resolved.push(component);
+    let adr_path = RepoPath::new(entry.path.clone()).map_err(|e| refusal(e.to_string()))?;
+    if !crate::domain::path::is_within(design_dir, adr_path.as_str()) {
+        return Err(refusal("approving ADR must be within configured Design"));
     }
-    Ok(resolved)
+    let body = contained_bytes(root, &adr_path)?;
+    if crate::domain::adr::sha256_hex(&body) != entry.content_sha256 {
+        return Err(refusal("policy ADR body differs from frozen approval"));
+    }
+    let binding = ownership_policy_binding(&body)?;
+    if &binding.policy_path != policy_path {
+        return Err(refusal(
+            "selected policy path differs from approved binding",
+        ));
+    }
+    let bytes = contained_bytes(root, policy_path)?;
+    if digest(&bytes) != binding.policy_sha256 {
+        return Err(refusal("policy bytes differ from approved ADR binding"));
+    }
+    let observed = OwnershipPolicyProvenance {
+        repository_id: config.repository_id,
+        workspace_id: workspace.workspace_id.clone(),
+        policy_path: policy_path.clone(),
+        policy_sha256: binding.policy_sha256.clone(),
+        adr_id: entry.id.clone(),
+        adr_path: adr_path.clone(),
+        adr_body_sha256: digest(&body),
+        adr_registry_revision: registry.revision,
+        approval_actor: entry.approved_by.clone(),
+        admitted_graph_revision: workspace.revision,
+    };
+    let provenance = if let Some(original) = persisted {
+        let mut current = observed;
+        if original.admitted_graph_revision > workspace.revision
+            || original.adr_registry_revision > registry.revision
+        {
+            return Err(refusal(
+                "policy provenance has a future graph/ADR observation",
+            ));
+        }
+        current.admitted_graph_revision = original.admitted_graph_revision;
+        current.adr_registry_revision = original.adr_registry_revision;
+        if &current != original {
+            return Err(refusal("approved policy provenance changed"));
+        }
+        original.clone()
+    } else {
+        observed
+    };
+    let identity = PolicyIdentity::new(PolicyIdentityFields {
+        design_references: vec![adr_path],
+        sha256: binding.policy_sha256,
+    })
+    .map_err(|e| refusal(e.to_string()))?;
+    let policy = ApprovedOwnershipPolicy::verify(
+        &bytes,
+        &PolicyApproval {
+            identity,
+            actor: entry.approved_by.clone(),
+            observed_revision: provenance.admitted_graph_revision,
+        },
+        workspace.revision,
+    )
+    .map_err(|e| refusal(e.to_string()))?;
+    if registry_before != contained_bytes(root, &registry_path)?
+        || body != contained_bytes(root, &provenance.adr_path)?
+        || bytes != contained_bytes(root, &provenance.policy_path)?
+    {
+        return Err(refusal("policy approval observation changed"));
+    }
+    Ok(ObservedOwnershipPolicy {
+        policy,
+        provenance,
+        registry_sha256: digest(&registry_before),
+        approving_entry: entry.clone(),
+        scope: scope.to_string(),
+    })
 }
 
-fn contained_target(root: &Path, registered: &Path) -> MineResult<PathBuf> {
-    let root = root.canonicalize()?;
-    let target = resolve_with_missing_tail(registered)?;
-    if !target.starts_with(&root) {
-        return Err(refusal("registered worktree path escapes Root"));
-    }
-    Ok(target)
-}
-
-fn initial_branch_anchor(
+fn observe_node_authority(
+    root: &Path,
     workspace: &PlanWorkspace,
     node: &PlanNode,
-    parsed: &CanonicalPlanId,
-    root: &Path,
-) -> MineResult<String> {
-    let candidate = if parsed.is_compensation() {
-        let predecessor = workspace
-            .plans
-            .iter()
-            .find(|candidate| {
-                candidate.compensating_plan == node.id
-                    && candidate.status == PlanStatus::Rejected
-                    && candidate.lineage_id == node.lineage_id
-            })
-            .ok_or_else(|| refusal("compensation is not declared by a rejected predecessor"))?;
-        validate_compensation_replacement(&predecessor.id, &node.id)?;
-        if node.hard_predecessors != predecessor.hard_predecessors {
-            return Err(refusal("compensation must inherit hard predecessors"));
-        }
-        git::head_of_branch(root, &predecessor.branch)?
+    repository_id: &str,
+    cached_policy: Option<&ObservedOwnershipPolicy>,
+) -> MineResult<(
+    crate::domain::ownership::EffectiveAuthority,
+    Option<ObservedOwnershipPolicy>,
+)> {
+    use crate::domain::{graph::*, ownership::*};
+    let identity = PlanIdentity::new(PlanIdentityFields {
+        repository_id: repository_id.to_string(),
+        workspace_id: workspace.workspace_id.clone(),
+        plan_id: node.id.clone(),
+        plan_path: RepoPath::new(node.path.clone()).map_err(|e| refusal(e.to_string()))?,
+        body_sha256: node.body_sha256.clone(),
+        lineage_id: node.lineage_id.clone(),
+        branch: node.branch.clone(),
+    })
+    .map_err(|e| refusal(e.to_string()))?;
+    if node.ownership.is_none() && node.ownership_policy.is_none() && node.clarifications.is_empty()
+    {
+        let body = contained_bytes(root, &identity.fields().plan_path)?;
+        let mapping = node
+            .write_scope()?
+            .into_iter()
+            .map(RepoPath::new)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| refusal(e.to_string()))?;
+        let authority = EffectiveAuthority::observe_conservative(identity, &body, mapping)
+            .map_err(|e| refusal(e.to_string()))?;
+        return Ok((authority, None));
+    }
+    let original = node
+        .ownership
+        .as_ref()
+        .ok_or_else(|| refusal("semantic provenance has no immutable declaration baseline"))?;
+    let provenance = node
+        .ownership_policy
+        .as_ref()
+        .ok_or_else(|| refusal("semantic provenance has no approved policy binding"))?;
+    let scope = if node.planning_scope.is_empty() {
+        Path::new(&workspace.design_root)
+            .parent()
+            .and_then(Path::to_str)
+            .ok_or_else(|| refusal("Design planning scope missing"))?
     } else {
-        let head = git::head_commit(root).ok_or_else(|| refusal("Root HEAD is unavailable"))?;
-        git::resolve_commit(root, &head)?
+        &node.planning_scope
     };
-    git::resolve_commit(root, &candidate)
+    let discovered = if cached_policy.is_some_and(|cached| &cached.provenance == provenance) {
+        None
+    } else {
+        Some(observe_ownership_policy(
+            root,
+            workspace,
+            &provenance.policy_path,
+            &provenance.adr_id,
+            scope,
+            Some(provenance),
+        )?)
+    };
+    let observed = discovered
+        .as_ref()
+        .or(cached_policy)
+        .expect("policy freshly observed or cached");
+    if !observed.approving_entry.applies_to(Some(scope)) {
+        return Err(refusal("approved policy does not apply to this Plan scope"));
+    }
+    let body = contained_bytes(root, &identity.fields().plan_path)?;
+    let mut current = identity.fields().clone();
+    current.body_sha256 = Some(crate::infrastructure::graph_checkpoint::digest(&body));
+    let current = PlanIdentity::new(current).map_err(|e| refusal(e.to_string()))?;
+    let authority = AuthorityResolver::resolve(
+        original,
+        &body,
+        &current,
+        &observed.policy,
+        workspace.revision,
+        &node.clarifications,
+    )
+    .map_err(|e| refusal(e.to_string()))?;
+    Ok((authority, discovered))
 }
 
-fn validate_registered_worktree(
-    node: &PlanNode,
-    target: &Path,
-    inventory: &[WorktreeInfo],
+pub(crate) fn authority_observation(
+    snapshot: &crate::infrastructure::graph_snapshot::GraphSnapshot,
+    id: &str,
+) -> MineResult<crate::domain::ownership::EffectiveAuthority> {
+    authority_from_workspace(&snapshot.repository_root, snapshot.workspace(), id)
+}
+
+pub(crate) fn authority_from_workspace(
     root: &Path,
-) -> MineResult<String> {
-    let observed = inventory
-        .iter()
-        .find(|worktree| same_path(&worktree.path, target))
-        .ok_or_else(|| refusal("registered Plan worktree is not attached"))?;
-    if observed.locked || observed.prunable || observed.detached || observed.bare {
-        return Err(refusal("registered Plan worktree is not usable"));
+    workspace: &PlanWorkspace,
+    id: &str,
+) -> MineResult<crate::domain::ownership::EffectiveAuthority> {
+    let config = root_configuration(root)?;
+    let node = workspace.get(id).ok_or_else(|| MineError::PlanNotFound {
+        plan_id: id.to_string(),
+    })?;
+    Ok(observe_node_authority(root, workspace, node, &config.repository_id, None)?.0)
+}
+
+pub(crate) fn ownership_snapshot(
+    snapshot: &crate::infrastructure::graph_snapshot::GraphSnapshot,
+    guard: &crate::infrastructure::file_lock::FileLock,
+) -> MineResult<crate::domain::scheduling::OwnershipWave> {
+    let observed = ownership_observation(
+        &snapshot.repository_root,
+        snapshot.workspace(),
+        crate::domain::graph::Sha256::new(snapshot.source_sha256.clone())
+            .map_err(|e| refusal(e.to_string()))?,
+        guard,
+    )?;
+    observed
+        .evaluator(snapshot.workspace())?
+        .wave()
+        .map_err(|e| refusal(e.to_string()))
+}
+
+struct OwnershipObservation {
+    repository_id: String,
+    source_sha256: crate::domain::graph::Sha256,
+    nodes: Vec<crate::domain::scheduling::NodeOwnership>,
+    policy: Option<ObservedOwnershipPolicy>,
+    pending: Option<crate::domain::scheduling::PendingPublication>,
+}
+impl OwnershipObservation {
+    fn evaluator<'a>(
+        &'a self,
+        workspace: &'a PlanWorkspace,
+    ) -> MineResult<crate::domain::scheduling::SchedulingKernel<'a>> {
+        crate::domain::scheduling::SchedulingKernel::new(
+            &self.repository_id,
+            workspace,
+            self.source_sha256.clone(),
+            self.policy.as_ref().map(|p| &p.policy),
+            self.nodes.clone(),
+            self.pending.clone(),
+        )
+        .map_err(|e| refusal(e.to_string()))
     }
-    if observed.branch.as_deref() != Some(node.branch.as_str()) {
-        return Err(refusal("registered Plan worktree is on the wrong branch"));
+}
+
+fn ownership_observation(
+    root: &Path,
+    workspace: &PlanWorkspace,
+    source_sha256: crate::domain::graph::Sha256,
+    guard: &crate::infrastructure::file_lock::FileLock,
+) -> MineResult<OwnershipObservation> {
+    use crate::domain::{graph::*, lifecycle_operation::*, scheduling::*};
+    let config = root_configuration(root)?;
+    let operations = crate::infrastructure::operation_store::OperationStore::under_lock(
+        root,
+        &config.repository_id,
+        &workspace.workspace_id,
+        guard,
+    )
+    .and_then(|store| store.observations())
+    .map_err(|e| refusal(format!("operation evidence invalid: {e}")))?;
+    let mut barriers = BarrierFacts::default();
+    for record in &operations {
+        barriers.observe(&record.operation);
     }
-    let tip = git::head_of_branch(root, &node.branch)?;
-    if observed.head != tip {
-        return Err(refusal(
-            "observed Plan worktree HEAD does not match registered branch tip",
-        ));
+    let pending = barriers.global.first().map(|pending| {
+        let operation = operations
+            .iter()
+            .find(|record| record.operation.fields().operation_id == pending.operation_id)
+            .expect("observed operation")
+            .operation
+            .fields();
+        let stage = match pending.stage {
+            OperationStage::GraphCheckpoint(
+                CheckpointStage::Intent | CheckpointStage::GitWorkspaceMutated,
+            ) => PublicationStage::Graph,
+            OperationStage::GraphCheckpoint(CheckpointStage::GraphPersisted) => {
+                PublicationStage::Render
+            }
+            _ => PublicationStage::Checkpoint,
+        };
+        PendingPublication {
+            operation_id: pending.operation_id.as_str().into(),
+            owner: operation.actor.clone(),
+            stage,
+        }
+    });
+    let mut nodes = Vec::with_capacity(workspace.plans.len());
+    let mut policy: Option<ObservedOwnershipPolicy> = None;
+    let mut stopped_refs = Vec::new();
+    for node in &workspace.plans {
+        let (authority, observed) = observe_node_authority(
+            root,
+            workspace,
+            node,
+            &config.repository_id,
+            policy.as_ref(),
+        )?;
+        if let Some(observed) = observed {
+            if policy
+                .as_ref()
+                .is_some_and(|p| p.policy.identity() != observed.policy.identity())
+            {
+                return Err(refusal(
+                    "snapshot contains incompatible approved ownership policies",
+                ));
+            }
+            if policy.is_none() {
+                policy = Some(observed);
+            }
+        }
+        let unfinished = operations.iter().find(|record| {
+            !terminal(&record.operation)
+                && record
+                    .operation
+                    .fields()
+                    .plan
+                    .as_ref()
+                    .is_some_and(|p| p.fields().plan_id == node.id)
+        });
+        let closure = if node.status == PlanStatus::Rejected {
+            let completed = operations.iter().find(|record| {
+                terminal(&record.operation)
+                    && record.operation.fields().kind == OperationKind::RejectedHandoff
+                    && record.operation.fields().outcome == OperationOutcome::Committed
+                    && record
+                        .operation
+                        .fields()
+                        .plan
+                        .as_ref()
+                        .is_some_and(|p| p == authority.plan())
+            });
+            if let Some(record) = completed {
+                let fields = record.operation.fields();
+                if fields.integrated_commit.is_some()
+                    || fields.cleanup.is_some()
+                    || fields.checkpoint.is_some()
+                    || !fields.verification_evidence.is_empty()
+                {
+                    return Err(refusal("rejected handoff contains foreign closure facts"));
+                }
+                let Some(ClosureBinding::RejectedHandoff { compensation }) = &record.closure else {
+                    return Err(refusal("rejected handoff binding missing"));
+                };
+                let review = record
+                    .operation
+                    .fields()
+                    .review
+                    .as_ref()
+                    .ok_or_else(|| refusal("stopped handoff review evidence missing"))?;
+                stopped_refs.push((node.branch.clone(), review.reviewed_tip.clone()));
+                let report_bytes = contained_bytes(root, &review.report.path)?;
+                if crate::infrastructure::graph_checkpoint::digest(&report_bytes)
+                    != review.report.sha256
+                    || report_bytes.len() as u64 != review.report.bytes
+                {
+                    return Err(refusal("stopped handoff report evidence changed"));
+                }
+                ClosureFacts::RejectedHandoff {
+                    evidence: Box::new(StoppedHandoff {
+                        rejected_plan: authority.plan().clone(),
+                        compensation: compensation.clone(),
+                        report: review.report.clone(),
+                        stopped: true,
+                        observed_revision: record.operation.fields().observed_graph_revision,
+                    }),
+                }
+            } else {
+                ClosureFacts::RejectionPending
+            }
+        } else if unfinished
+            .is_some_and(|record| record.operation.fields().kind == OperationKind::Acceptance)
+        {
+            ClosureFacts::ReviewPending
+        } else {
+            ClosureFacts::Settled
+        };
+        nodes.push(NodeOwnership {
+            authority,
+            worktree: RepoPath::new(node.worktree_path.clone())
+                .map_err(|e| refusal(e.to_string()))?,
+            mutable_outputs: vec![
+                RepoPath::new(format!(".mine/build/{}", node.id))
+                    .map_err(|e| refusal(e.to_string()))?,
+            ],
+            closure,
+        });
     }
-    Ok(tip)
+    if let Some(observed) = &policy {
+        let fresh = observe_ownership_policy(
+            root,
+            workspace,
+            &observed.provenance.policy_path,
+            &observed.provenance.adr_id,
+            &observed.scope,
+            Some(&observed.provenance),
+        )?;
+        if fresh.registry_sha256 != observed.registry_sha256 {
+            return Err(refusal("policy observation changed during snapshot"));
+        }
+    }
+    let mut stopped_git = crate::infrastructure::graph_checkpoint::checkpoint_git(root, None)
+        .map_err(|e| refusal(e.to_string()))?;
+    crate::infrastructure::graph_checkpoint::plan_git::preserved_references(
+        &mut stopped_git,
+        &stopped_refs,
+    )
+    .map_err(|e| refusal(e.to_string()))?;
+    Ok(OwnershipObservation {
+        repository_id: config.repository_id,
+        source_sha256,
+        nodes,
+        policy,
+        pending,
+    })
 }
 
 fn validate_review_report(root: &Path, node: &PlanNode, requested: &str) -> MineResult<String> {
     let requested = crate::domain::path::normalize_repo_relative(requested)?;
-    let stem = Path::new(&node.path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| refusal("registered Plan path has no UTF-8 file stem"))?;
-    let expected = format!("docs/plan/reports/{stem}-review.md");
+    let expected = crate::domain::plan_id::report_path(&node.path, "review")?;
     if requested != expected {
         return Err(refusal(format!(
             "rejection review report must be the canonical path {expected}"
@@ -290,12 +664,14 @@ pub struct PlanService<'a> {
 pub struct PlanLookup {
     #[serde(flatten)]
     pub node: PlanNode,
+    pub effective_authority: crate::domain::ownership::EffectiveAuthority,
     pub registered_worktree_path: String,
     pub resolved_worktree_path: String,
     pub observed_worktree: Option<WorktreeInfo>,
     pub caller_location: String,
     pub authoritative_root: String,
     pub authoritative_revision: u64,
+    pub pending_operations: Vec<crate::infrastructure::operation_store::OperationObservation>,
 }
 
 /// Result of deterministic linked-worktree preparation.
@@ -304,6 +680,22 @@ pub struct PlanPreparation {
     #[serde(flatten)]
     pub lookup: PlanLookup,
     pub action: String,
+    pub revision_before: u64,
+    pub revision_after: u64,
+    pub request_operation_id: crate::domain::lifecycle_operation::OperationId,
+    pub request_actor: String,
+    pub generation: Option<crate::domain::graph::PreparationGeneration>,
+    pub checkpoint: Option<crate::domain::lifecycle_operation::LifecycleOperation>,
+    pub replay: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanPrepareRequest {
+    pub id: String,
+    pub expected_revision: u64,
+    pub operation_id: crate::domain::lifecycle_operation::OperationId,
+    pub actor: String,
+    pub mode: crate::domain::graph::PreparationMode,
 }
 
 impl<'a> PlanService<'a> {
@@ -338,8 +730,9 @@ impl<'a> PlanService<'a> {
             .filter(|candidate| candidate.lineage_id == node.lineage_id)
             .map(|candidate| candidate.branch.as_str())
             .collect();
-        let observed_worktree = git::list_worktrees(self.graph.repo_root())
-            .unwrap_or_default()
+        let observed_worktree = self
+            .graph
+            .worktrees()?
             .into_iter()
             .skip(1)
             .find(|worktree| {
@@ -358,186 +751,52 @@ impl<'a> PlanService<'a> {
             },
             |worktree| worktree.path.clone(),
         );
+        let pending_operations = self
+            .graph
+            .pending_operations()?
+            .into_iter()
+            .filter(|record| {
+                record
+                    .operation
+                    .fields()
+                    .plan
+                    .as_ref()
+                    .is_some_and(|plan| plan.fields().plan_id == node.id)
+            })
+            .collect();
         Ok(PlanLookup {
+            effective_authority: self.graph.effective_authority(id)?,
             registered_worktree_path: node.worktree_path.clone(),
             resolved_worktree_path,
             observed_worktree,
             caller_location: caller_root.display().to_string(),
             authoritative_root: self.graph.repo_root().display().to_string(),
             authoritative_revision: ws.revision,
+            pending_operations,
             node,
         })
     }
 
-    /// Creates, switches, or exactly reuses the registered lineage worktree.
-    pub fn prepare(&self, id: &str, caller_root: &Path) -> MineResult<PlanPreparation> {
-        let ws = self.graph.validate()?;
-        let node = ws.get(id).cloned().ok_or_else(|| MineError::PlanNotFound {
-            plan_id: id.to_string(),
-        })?;
-        let parsed = CanonicalPlanId::parse(id)?;
-        if !matches!(
-            node.status,
-            PlanStatus::Ready | PlanStatus::InProgress | PlanStatus::Implemented
-        ) {
-            return Err(MineError::InvalidTransition {
-                plan_id: id.to_string(),
-                from: node.status.as_str().to_string(),
-                to: "PREPARED".to_string(),
-            });
-        }
-        let root = self.graph.repo_root();
-        if git::current_branch(root)?.as_deref() != Some(ws.integration_branch.as_str()) {
-            return Err(refusal(format!(
-                "Root must remain on integration branch {}",
-                ws.integration_branch
-            )));
-        }
-        if !git::is_clean(root) {
-            return Err(refusal("Root integration worktree is dirty"));
-        }
-        let registered = root.join(&node.worktree_path);
-        let target = contained_target(root, &registered)?;
-        let inventory = git::list_worktrees(root)?;
-        if inventory.iter().any(|w| w.locked || w.prunable) {
-            return Err(refusal(
-                "locked or prunable worktree registration requires manual recovery",
-            ));
-        }
-        let at_path = inventory.iter().find(|w| same_path(&w.path, &target));
-        let branch_owner = inventory
-            .iter()
-            .find(|w| w.branch.as_deref() == Some(node.branch.as_str()));
-        let initial_head = initial_branch_anchor(&ws, &node, &parsed, root)?;
-        let branch_tip = git::branch_exists(root, &node.branch)
-            .then(|| git::head_of_branch(root, &node.branch))
-            .transpose()?;
-        match node.status {
-            PlanStatus::Ready => {
-                if branch_tip.as_deref().is_some_and(|tip| tip != initial_head) {
-                    return Err(refusal(format!(
-                        "registered branch {} is not at required HEAD {initial_head}",
-                        node.branch
-                    )));
-                }
-            }
-            PlanStatus::InProgress | PlanStatus::Implemented => {
-                let tip = branch_tip
-                    .as_deref()
-                    .ok_or_else(|| refusal("active Plan branch is missing"))?;
-                let anchor = git::resolve_commit(root, &node.branch_anchor)
-                    .map_err(|_| refusal("stored branch_anchor is not a valid commit"))?;
-                if anchor != node.branch_anchor {
-                    return Err(refusal(
-                        "stored branch_anchor is not a full commit object ID",
-                    ));
-                }
-                if !git::is_ancestor_checked(root, &anchor, tip)? {
-                    return Err(refusal(
-                        "stored branch_anchor is not an ancestor of the Plan branch tip",
-                    ));
-                }
-            }
-            _ => unreachable!("status gate above restricts preparation states"),
-        }
-        let action = if let Some(observed) = at_path {
-            if observed.branch.as_deref() == Some(node.branch.as_str()) {
-                let tip = branch_tip
-                    .as_deref()
-                    .ok_or_else(|| refusal("registered Plan branch is missing"))?;
-                if observed.head != tip {
-                    return Err(refusal(
-                        "observed Plan worktree HEAD does not match registered branch tip",
-                    ));
-                }
-                "reused"
-            } else {
-                if node.status != PlanStatus::Ready || !parsed.is_compensation() {
-                    return Err(refusal("registered lineage path is on the wrong branch"));
-                }
-                let worktree = Path::new(&observed.path);
-                if !git::is_clean(worktree) {
-                    return Err(refusal("compensation lineage worktree is dirty"));
-                }
-                if branch_owner.is_some_and(|owner| owner.path != observed.path) {
-                    return Err(refusal("registered branch is checked out elsewhere"));
-                }
-                if !git::branch_exists(root, &node.branch) {
-                    git::create_branch(root, &node.branch, &initial_head)?;
-                }
-                git::switch_branch(worktree, &node.branch)?;
-                "switched"
-            }
-        } else {
-            if node.status != PlanStatus::Ready {
-                return Err(refusal("active Plan worktree is missing"));
-            }
-            if branch_owner.is_some() {
-                return Err(refusal("registered branch is checked out elsewhere"));
-            }
-            if target.exists() {
-                return Err(refusal(
-                    "registered worktree directory is occupied but unregistered",
-                ));
-            }
-            if parsed.is_compensation() {
-                return Err(refusal(
-                    "compensation requires its existing lineage worktree",
-                ));
-            }
-            if !git::branch_exists(root, &node.branch) {
-                git::create_branch(root, &node.branch, &initial_head)?;
-            }
-            let revalidated_target = contained_target(root, &registered)?;
-            if revalidated_target != target {
-                return Err(refusal(
-                    "registered worktree path changed during preparation",
-                ));
-            }
-            if let Err(add_error) = git::add_worktree(root, &revalidated_target, &node.branch) {
-                // Git versions differ in whether a failed `worktree add`
-                // preserves an existing branch. Keep the failure evidence
-                // deterministic and recoverable on every platform.
-                if !git::branch_exists(root, &node.branch) {
-                    git::create_branch(root, &node.branch, &initial_head).map_err(
-                        |recovery_error| {
-                            refusal(format!(
-                                "worktree creation failed ({add_error}); branch recovery failed ({recovery_error})"
-                            ))
-                        },
-                    )?;
-                }
-                return Err(add_error);
-            }
-            "created"
-        };
-        let lookup = self.show_with_locations(id, caller_root)?;
-        let observed = lookup
-            .observed_worktree
-            .as_ref()
-            .ok_or_else(|| refusal("prepared worktree was not observed after mutation"))?;
-        if observed.branch.as_deref() != Some(node.branch.as_str()) {
-            return Err(refusal(
-                "prepared worktree branch does not match registration",
-            ));
-        }
-        let prepared_tip = git::head_of_branch(root, &node.branch)?;
-        if observed.head != prepared_tip {
-            return Err(refusal(
-                "prepared worktree HEAD does not match registered branch tip",
-            ));
-        }
-        Ok(PlanPreparation {
-            lookup,
-            action: action.to_string(),
-        })
+    /// Creates or inspects the exact registered workspace through native intent.
+    pub fn prepare(
+        &self,
+        request: PlanPrepareRequest,
+        caller_root: &Path,
+    ) -> MineResult<PlanPreparation> {
+        super::native_plan_workspace::NativePlanWorkspace::new(self.graph).prepare(
+            request,
+            caller_root,
+            &mut crate::domain::lifecycle_operation::NoInterruption,
+        )
     }
 
     /// Adds a new plan node (status `DRAFT`).
     pub fn add(&self, req: PlanAddRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
+        let expected = req.expected_revision;
+        let actor = req.actor.clone();
         let worktrees_root = self.graph.worktrees_root()?;
-        self.graph.mutate(expected, move |mut w| {
+        let root = self.graph.repo_root().to_path_buf();
+        self.graph.mutate(expected, &actor, move |mut w| {
             if w.get(&req.id).is_some() {
                 return Err(MineError::GraphInvalid {
                     detail: format!("plan id {} already exists", req.id),
@@ -552,19 +811,16 @@ impl<'a> PlanService<'a> {
             }
             crate::domain::path::normalize_repo_relative(&req.planning_scope)?;
             let planning_scope = req.planning_scope.clone();
-            let (branch, lineage_id, worktree_path) =
-                if w.workspace_id == "bootstrap-mine-v1" && !req.id.starts_with("plan") {
-                    crate::domain::path::normalize_repo_relative(&req.path)?;
-                    (String::new(), String::new(), String::new())
-                } else {
-                    let parsed = CanonicalPlanId::parse(&req.id)?;
-                    let _slug = validate_plan_path(&req.id, &req.path)?;
-                    (
-                        registered_plan_branch(&w.workspace_id, &req.id, &req.path)?,
-                        parsed.lineage_id(),
-                        parsed.worktree_path_under(&worktrees_root),
-                    )
-                };
+            observe_planning_readiness(&root, &planning_scope, "")?;
+            let parsed = CanonicalPlanId::parse(&req.id)?;
+            let _slug = root_configuration(&root)?
+                .layout()?
+                .validate_plan_path(&req.id, &req.path)?;
+            let (branch, lineage_id, worktree_path) = (
+                registered_plan_branch(&w.workspace_id, &req.id, &req.path)?,
+                parsed.lineage_id(),
+                parsed.worktree_path_under(&worktrees_root),
+            );
             if req.design_references.is_empty() {
                 return Err(MineError::GraphInvalid {
                     detail: format!("plan {} has no design references", req.id),
@@ -614,85 +870,388 @@ impl<'a> PlanService<'a> {
                 adr_registry_revision: 0,
                 lineage_id,
                 worktree_path,
+                body_sha256: None,
+                ownership: None,
+                ownership_policy: None,
+                clarifications: vec![],
+                acceptance: None,
+                preparations: vec![],
+                started_preparation_generation: None,
             };
+            let added_id = node.id.clone();
+            let is_compensation =
+                CanonicalPlanId::parse(&added_id).is_ok_and(|parsed| parsed.is_compensation());
             w.plans.push(node);
+            if is_compensation {
+                validation::declared_compensation_predecessor(&w, &added_id)?;
+            }
+            // New canonical registrations capture actual contained body bytes.
+            // Legacy migration never derives this historical fact retrospectively.
+            if CanonicalPlanId::parse(&added_id).is_ok() {
+                use crate::domain::graph::{PlanIdentity, PlanIdentityFields, RepoPath};
+                use crate::domain::ownership::AuthorityResolver;
+                let added = w.get(&added_id).expect("just registered").clone();
+                let body_path =
+                    RepoPath::new(added.path.clone()).map_err(|e| refusal(e.to_string()))?;
+                let body = contained_bytes(&root, &body_path)?;
+                crate::infrastructure::governance_git::freeze_body(&root, &body_path, &body)?;
+                let body_sha256 = crate::infrastructure::graph_checkpoint::digest(&body);
+                w.get_mut(&added_id).expect("just registered").body_sha256 =
+                    Some(body_sha256.clone());
+                if let Some(input_path) = req.ownership_input {
+                    let input_path =
+                        RepoPath::new(input_path).map_err(|e| refusal(e.to_string()))?;
+                    let input: SemanticRegistrationInput =
+                        serde_json::from_slice(&contained_bytes(&root, &input_path)?)
+                            .map_err(|_| refusal("invalid typed semantic registration input"))?;
+                    let observed = observe_ownership_policy(
+                        &root,
+                        &w,
+                        &input.policy_path,
+                        &input.approving_adr,
+                        &added.planning_scope,
+                        w.plans
+                            .iter()
+                            .filter_map(|node| node.ownership_policy.as_ref())
+                            .find(|binding| {
+                                binding.policy_path == input.policy_path
+                                    && binding.adr_id == input.approving_adr
+                            }),
+                    )?;
+                    let identity = PlanIdentity::new(PlanIdentityFields {
+                        repository_id: observed.provenance.repository_id.clone(),
+                        workspace_id: w.workspace_id.clone(),
+                        plan_id: added.id,
+                        plan_path: body_path,
+                        body_sha256: Some(body_sha256),
+                        lineage_id: added.lineage_id,
+                        branch: added.branch,
+                    })
+                    .map_err(|e| refusal(e.to_string()))?;
+                    if input.ownership.fields().plan != identity {
+                        return Err(refusal("semantic declaration Plan/body identity differs"));
+                    }
+                    AuthorityResolver::resolve(
+                        &input.ownership,
+                        &body,
+                        &identity,
+                        &observed.policy,
+                        expected,
+                        &[],
+                    )
+                    .map_err(|e| refusal(e.to_string()))?;
+                    let fresh = observe_ownership_policy(
+                        &root,
+                        &w,
+                        &input.policy_path,
+                        &input.approving_adr,
+                        &added.planning_scope,
+                        Some(&observed.provenance),
+                    )?;
+                    if fresh.registry_sha256 != observed.registry_sha256 {
+                        return Err(refusal("approval registry changed before registration"));
+                    }
+                    let node = w.get_mut(&added_id).expect("just registered");
+                    node.ownership = Some(input.ownership);
+                    node.ownership_policy = Some(observed.provenance);
+                }
+            } else if req.ownership_input.is_some() {
+                return Err(refusal(
+                    "semantic registration requires canonical Plan identity",
+                ));
+            }
             w.revision = expected + 1;
+            // DRAFT defers execution admission, not declaration validity. Use
+            // the public reader's authority resolver before any graph/checkpoint
+            // publication; never persist an unqueryable empty conservative scope.
+            authority_from_workspace(&root, &w, &added_id)?;
             Ok(w)
         })
+    }
+
+    /// Append an owner-authorized clarification under the one coordinator.
+    pub fn clarify(
+        &self,
+        req: PlanClarifyRequest,
+    ) -> MineResult<(PlanWorkspace, crate::domain::ownership::EffectiveAuthority)> {
+        use crate::domain::{graph::*, ownership::*};
+        let root = self.graph.repo_root().to_path_buf();
+        // Caller-contained input supplies attribution, never stored owner/Git.
+        // Re-read and compare inside the transaction before publishing intent.
+        let actor_path = RepoPath::new(req.input.clone()).map_err(|e| refusal(e.to_string()))?;
+        let declared: SemanticClarificationInput =
+            serde_json::from_slice(&contained_bytes(&root, &actor_path)?)
+                .map_err(|_| refusal("invalid typed clarification input"))?;
+        let actor = declared.actor;
+        let mut result = None;
+        let workspace = self.graph.mutate_locked(
+            req.expected_revision,
+            &actor,
+            |mut workspace, guard, source_sha256| {
+                let node =
+                    workspace
+                        .get(&req.id)
+                        .cloned()
+                        .ok_or_else(|| MineError::PlanNotFound {
+                            plan_id: req.id.clone(),
+                        })?;
+                if node.status.is_terminal() {
+                    return Err(refusal("terminal Plan authority cannot be clarified"));
+                }
+                let input_path =
+                    RepoPath::new(req.input.clone()).map_err(|e| refusal(e.to_string()))?;
+                let input: SemanticClarificationInput =
+                    serde_json::from_slice(&contained_bytes(&root, &input_path)?)
+                        .map_err(|_| refusal("invalid typed clarification input"))?;
+                if input.actor != actor {
+                    return Err(refusal("clarification actor changed before admission"));
+                }
+                let first_activation = node.ownership.is_none();
+                if first_activation != (input.kind == ClarificationKind::BaselineAttestation)
+                    || first_activation != input.baseline.is_some()
+                {
+                    return Err(refusal(
+                        "baseline declarations are allowed only for explicit first activation",
+                    ));
+                }
+                let baseline = node
+                    .ownership
+                    .clone()
+                    .or(input.baseline)
+                    .ok_or_else(|| refusal("first activation declaration baseline missing"))?;
+                let scope = if node.planning_scope.is_empty() {
+                    Path::new(&workspace.design_root)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .ok_or_else(|| refusal("Design planning scope missing"))?
+                } else {
+                    &node.planning_scope
+                };
+                let persisted = node.ownership_policy.as_ref().or_else(|| {
+                    workspace
+                        .plans
+                        .iter()
+                        .filter_map(|node| node.ownership_policy.as_ref())
+                        .find(|binding| {
+                            binding.policy_path == input.policy_path
+                                && binding.adr_id == input.approving_adr
+                        })
+                });
+                if node.ownership_policy.as_ref().is_some_and(|binding| {
+                    binding.policy_path != input.policy_path
+                        || binding.adr_id != input.approving_adr
+                }) {
+                    return Err(refusal(
+                        "clarification cannot switch its original approved policy binding",
+                    ));
+                }
+                let observed = observe_ownership_policy(
+                    &root,
+                    &workspace,
+                    &input.policy_path,
+                    &input.approving_adr,
+                    scope,
+                    persisted,
+                )?;
+                let body = contained_bytes(
+                    &root,
+                    &RepoPath::new(node.path.clone()).map_err(|e| refusal(e.to_string()))?,
+                )?;
+                let effective = AuthorityResolver::append(
+                    &baseline,
+                    &body,
+                    &observed.policy,
+                    req.expected_revision,
+                    &node.clarifications,
+                    ClarificationRequest {
+                        plan: input.plan,
+                        policy: observed.policy.identity().clone(),
+                        expected_revision: req.expected_revision,
+                        expected_tail: input.expected_tail,
+                        actor: input.actor,
+                        reason: input.reason,
+                        kind: input.kind,
+                        physical_mapping: input.physical_mapping,
+                        generators: input.generators,
+                    },
+                )
+                .map_err(|e| refusal(e.to_string()))?;
+                let mut ownership =
+                    ownership_observation(&root, &workspace, source_sha256.clone(), guard)?;
+                if ownership
+                    .policy
+                    .as_ref()
+                    .is_some_and(|p| p.policy.identity() != observed.policy.identity())
+                {
+                    return Err(refusal(
+                        "clarification policy differs from other semantic owners",
+                    ));
+                }
+                ownership.policy = Some(observed);
+                let admission = ownership
+                    .evaluator(&workspace)?
+                    .admit_clarification(&req.id, effective.clone(), req.expected_revision)
+                    .map_err(|e| refusal(e.to_string()))?;
+                if !admission.admissible() {
+                    return Err(refusal(format!(
+                        "clarification ownership blocked: {:?}",
+                        admission.blockers
+                    )));
+                }
+                let observed = ownership.policy.as_ref().expect("explicit verified policy");
+                let fresh = observe_ownership_policy(
+                    &root,
+                    &workspace,
+                    &observed.provenance.policy_path,
+                    &observed.provenance.adr_id,
+                    scope,
+                    Some(&observed.provenance),
+                )?;
+                if fresh.registry_sha256 != observed.registry_sha256 {
+                    return Err(refusal("clarification approval observation changed"));
+                }
+                let node = workspace
+                    .get_mut(&req.id)
+                    .expect("Plan observed under lock");
+                node.ownership = Some(baseline);
+                node.ownership_policy = Some(observed.provenance.clone());
+                node.clarifications = effective.clarifications().to_vec();
+                node.updated_at = req.updated_at.clone();
+                workspace.revision = req.expected_revision + 1;
+                result = Some(effective);
+                Ok(workspace)
+            },
+        )?;
+        Ok((
+            workspace,
+            result.expect("clarification result recorded on success"),
+        ))
     }
 
     /// Starts a plan: requires `READY` + hard predecessors `ACCEPTED`.
     pub fn start(&self, req: PlanStartRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
+        let expected = req.expected_revision;
+        let actor = req.owner.clone();
         let root = self.graph.repo_root().to_path_buf();
-        self.graph.mutate(expected, move |mut w| {
-            let start_node = w
-                .get(&req.id)
-                .cloned()
-                .ok_or_else(|| MineError::PlanNotFound {
-                    plan_id: req.id.clone(),
-                })?;
-            let current = start_node.status;
-            if current != PlanStatus::Ready {
-                return Err(MineError::InvalidTransition {
-                    plan_id: req.id.clone(),
-                    from: current.as_str().to_string(),
-                    to: PlanStatus::InProgress.as_str().to_string(),
-                });
-            }
-            if !validation::hard_predecessors_accepted(&w, &req.id)? {
-                let preds = w
-                    .get(&req.id)
-                    .map(|n| n.hard_predecessors.clone())
-                    .unwrap_or_default();
-                let unaccepted = preds
-                    .into_iter()
-                    .find(|p| w.get(p).is_some_and(|n| n.status != PlanStatus::Accepted))
-                    .unwrap_or_default();
-                return Err(MineError::PredecessorNotAccepted {
-                    plan_id: req.id.clone(),
-                    predecessor_id: unaccepted,
-                    predecessor_status: "not accepted".to_string(),
-                });
-            }
-            if git::current_branch(&root)?.as_deref() != Some(w.integration_branch.as_str()) {
-                return Err(refusal(format!(
-                    "Root must remain on integration branch {}",
-                    w.integration_branch
-                )));
-            }
-            if !git::is_clean(&root) {
-                return Err(refusal("Root integration worktree is dirty"));
-            }
-            let parsed = CanonicalPlanId::parse(&req.id)?;
-            let expected_anchor = initial_branch_anchor(&w, &start_node, &parsed, &root)?;
-            let target = contained_target(&root, &root.join(&start_node.worktree_path))?;
-            let inventory = git::list_worktrees(&root)?;
-            let observed_tip =
-                validate_registered_worktree(&start_node, &target, &inventory, &root)?;
-            if observed_tip != expected_anchor {
-                return Err(refusal(format!(
-                    "prepared Plan branch is not at required start anchor {expected_anchor}"
-                )));
-            }
-            let node = w.get_mut(&req.id).expect("checked present above");
-            node.status
-                .validate_transition(&req.id, PlanStatus::InProgress)?;
-            node.status = PlanStatus::InProgress;
-            node.branch_anchor = expected_anchor;
-            node.owner = req.owner;
-            node.run_id = req.run_id;
-            node.started_at = req.started_at.clone();
-            node.updated_at = req.started_at;
-            w.revision = expected + 1;
-            Ok(w)
-        })
+        self.graph
+            .mutate_locked(expected, &actor, move |mut w, guard, source_sha256| {
+                let start_node =
+                    w.get(&req.id)
+                        .cloned()
+                        .ok_or_else(|| MineError::PlanNotFound {
+                            plan_id: req.id.clone(),
+                        })?;
+                let current = start_node.status;
+                if current != PlanStatus::Ready {
+                    return Err(MineError::InvalidTransition {
+                        plan_id: req.id.clone(),
+                        from: current.as_str().to_string(),
+                        to: PlanStatus::InProgress.as_str().to_string(),
+                    });
+                }
+                crate::domain::error::contract_text("owner", &req.owner)
+                    .map_err(|e| refusal(e.to_string()))?;
+                crate::domain::error::contract_text("run_id", &req.run_id)
+                    .map_err(|e| refusal(e.to_string()))?;
+                if !validation::hard_predecessors_accepted(&w, &req.id)? {
+                    let preds = w
+                        .get(&req.id)
+                        .map(|n| n.hard_predecessors.clone())
+                        .unwrap_or_default();
+                    let unaccepted = preds
+                        .into_iter()
+                        .find(|p| w.get(p).is_some_and(|n| n.status != PlanStatus::Accepted))
+                        .unwrap_or_default();
+                    return Err(MineError::PredecessorNotAccepted {
+                        plan_id: req.id.clone(),
+                        predecessor_id: unaccepted,
+                        predecessor_status: "not accepted".to_string(),
+                    });
+                }
+                let ownership = ownership_observation(&root, &w, source_sha256.clone(), guard)?;
+                let admission = ownership
+                    .evaluator(&w)?
+                    .admit(&req.id, expected)
+                    .map_err(|e| refusal(e.to_string()))?;
+                if !admission.admissible() {
+                    return Err(refusal(format!(
+                        "ownership admission blocked: {:?}",
+                        admission.blockers
+                    )));
+                }
+                let scope = if start_node.planning_scope.is_empty() {
+                    Path::new(&w.design_root)
+                        .parent()
+                        .and_then(Path::to_str)
+                        .ok_or_else(|| refusal("Design planning scope missing"))?
+                } else {
+                    &start_node.planning_scope
+                };
+                observe_planning_readiness(&root, scope, &req.started_at)?;
+                use crate::infrastructure::graph_checkpoint::{
+                    CheckpointKernel, checkpoint_git, digest, plan_git::{self, CheckoutState, RefState},
+                    preparation_history, preparation_intent,
+                };
+                use crate::domain::graph::{FileIdentity, RepoPath};
+                let generation = start_node.preparations.last().ok_or_else(||refusal("READY Plan requires completed preparation; use explicit legacy recovery when applicable"))?;
+                let kernel = CheckpointKernel::under_lock(&root,guard).map_err(|e|refusal(e.to_string()))?;
+                let (common,head) = kernel.preparation_root().map_err(|e|refusal(e.to_string()))?;
+                let handoffs = kernel.store().observations().map_err(|e|refusal(e.to_string()))?;
+                super::native_lifecycle::observe_compensation_handoff(&root,&w,&start_node,&handoffs)?;
+                let config = root_configuration(&root)?;
+                let mut git = checkpoint_git(&root,None).map_err(|e|refusal(e.to_string()))?;
+                let path = RepoPath::new(start_node.path.clone()).map_err(|e|refusal(e.to_string()))?;
+                let body = contained_bytes(&root,&path)?;
+                if generation.plan.fields().body_sha256.as_ref() != Some(&digest(&body)) {
+                    return Err(refusal("start body differs from frozen preparation"));
+                }
+                let mut decisions = Vec::new();
+                for reference in &start_node.design_references {
+                    let path = RepoPath::new(reference.clone()).map_err(|e|refusal(e.to_string()))?;
+                    let bytes = contained_bytes(&root,&path)?;
+                    decisions.push(FileIdentity {path,bytes:bytes.len() as u64,sha256:digest(&bytes)});
+                }
+                let mut files = decisions.clone();
+                files.push(FileIdentity {path,bytes:body.len() as u64,sha256:digest(&body)});
+                super::native_evidence::committed_files(&root,&head,&files)?;
+                let location = RepoPath::new(start_node.worktree_path.clone()).map_err(|e|refusal(e.to_string()))?;
+                let reference = plan_git::reference(&mut git,&start_node.branch).map_err(|e|refusal(e.to_string()))?;
+                let checkout = plan_git::checkout(&root,&common,&location,&start_node.branch,&mut git).map_err(|e|refusal(e.to_string()))?;
+                let expected_checkout = preparation_intent::completed_checkout(&kernel,generation).map_err(|e|refusal(e.to_string()))?;
+                if reference != (RefState::Present {tip:generation.prepared_branch_commit.clone()})
+                    || !matches!(checkout,CheckoutState::Present {proof} if proof == expected_checkout) {
+                    return Err(refusal("READY start requires clean exact prepared ref and checkout"));
+                }
+                if CanonicalPlanId::parse(&start_node.id)?.is_compensation() {
+                    let rejected = validation::declaring_rejected_predecessor(&w,&start_node.id)?;
+                    if plan_git::reference(&mut git,&rejected.branch).map_err(|e|refusal(e.to_string()))?
+                        != (RefState::Present {tip:generation.prepared_branch_commit.clone()}) {
+                        return Err(refusal("preserved rejected predecessor advanced after preparation"));
+                    }
+                }
+                preparation_history::prove(&mut git,&config,&w,&start_node,&head,&decisions).map_err(|e|refusal(e.to_string()))?;
+                let expected_anchor = generation.prepared_branch_commit.as_str().to_owned();
+                let ordinal = generation.ordinal;
+                let node = w.get_mut(&req.id).expect("checked present above");
+                node.status
+                    .validate_transition(&req.id, PlanStatus::InProgress)?;
+                node.status = PlanStatus::InProgress;
+                node.branch_anchor = expected_anchor;
+                node.started_preparation_generation = Some(ordinal);
+                node.owner = req.owner;
+                node.run_id = req.run_id;
+                node.started_at = req.started_at.clone();
+                node.updated_at = req.started_at;
+                w.revision = expected + 1;
+                Ok(w)
+            })
     }
 
     /// Marks a plan implemented: records the report + commits.
     pub fn mark_implemented(&self, req: PlanImplementedRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
-        self.graph.mutate(expected, move |mut w| {
+        let expected = req.expected_revision;
+        let actor = req.actor.clone();
+        self.graph.mutate(expected, &actor, move |mut w| {
             let node = w.get_mut(&req.id).ok_or_else(|| MineError::PlanNotFound {
                 plan_id: req.id.clone(),
             })?;
@@ -710,97 +1269,71 @@ impl<'a> PlanService<'a> {
     /// Accepts a plan: requires `IMPLEMENTED`; releases eligible BLOCKED
     /// successors whose hard predecessors are all now accepted.
     pub fn accept(&self, req: PlanAcceptRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
-        self.graph.mutate(expected, move |mut w| {
-            let current =
-                w.get(&req.id)
-                    .map(|n| n.status)
-                    .ok_or_else(|| MineError::PlanNotFound {
-                        plan_id: req.id.clone(),
-                    })?;
-            if current != PlanStatus::Implemented {
-                return Err(MineError::InvalidTransition {
-                    plan_id: req.id.clone(),
-                    from: current.as_str().to_string(),
-                    to: PlanStatus::Accepted.as_str().to_string(),
-                });
-            }
-            PlanStatus::Implemented.validate_transition(&req.id, PlanStatus::Accepted)?;
-            // Accept the target first, then release newly-ready successors.
-            let accepted_ancestors: HashSet<String> = w
-                .plans
-                .iter()
-                .filter(|p| p.status == PlanStatus::Accepted)
-                .map(|p| p.id.clone())
-                .collect();
-            for p in w.plans.iter_mut() {
-                if p.status == PlanStatus::Blocked
-                    && !p.hard_predecessors.is_empty()
-                    && p.hard_predecessors
-                        .iter()
-                        .all(|hp| accepted_ancestors.contains(hp) || hp == &req.id)
-                {
-                    p.status = PlanStatus::Ready;
-                    p.updated_at = req.updated_at.clone();
-                }
-            }
-            let node = w.get_mut(&req.id).expect("checked present above");
-            node.status = PlanStatus::Accepted;
-            node.review_report = req.review_report;
-            node.updated_at = req.updated_at;
-            w.revision = expected + 1;
-            Ok(w)
-        })
+        super::native_lifecycle::NativeLifecycle::new(self.graph).finalize_for_plan(
+            req.expected_revision,
+            &req.input,
+            &req.id,
+            &req.operation_id,
+        )
     }
 
     /// Rejects a plan: records reason + compensating plan; downstream stays
     /// blocked.
     pub fn reject(&self, req: PlanRejectRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
+        let expected = req.expected_revision;
+        let actor = req.actor.clone();
         let root = self.graph.repo_root().to_path_buf();
-        self.graph.mutate(expected, move |mut w| {
-            let current = w
-                .get(&req.id)
-                .cloned()
-                .ok_or_else(|| MineError::PlanNotFound {
-                    plan_id: req.id.clone(),
-                })?;
-            if !matches!(
-                current.status,
-                PlanStatus::InProgress | PlanStatus::Implemented
-            ) {
-                return Err(MineError::InvalidTransition {
-                    plan_id: req.id.clone(),
-                    from: current.status.as_str().to_string(),
-                    to: PlanStatus::Rejected.as_str().to_string(),
-                });
-            }
-            current
-                .status
-                .validate_transition(&req.id, PlanStatus::Rejected)?;
-            if req.reason.trim().is_empty() {
-                return Err(MineError::GraphInvalid {
-                    detail: "rejection requires a non-empty reason".to_string(),
-                });
-            }
-            if req.compensating_plan.is_empty() {
-                return Err(MineError::GraphInvalid {
-                    detail: "rejection requires a compensating plan".to_string(),
-                });
-            }
-            if req.id.starts_with("plan") {
-                validate_compensation_replacement(&req.id, &req.compensating_plan)?;
-            }
-            let review_report = validate_review_report(&root, &current, &req.review_report)?;
-            let node = w.get_mut(&req.id).expect("checked present above");
-            node.status = PlanStatus::Rejected;
-            node.rejection_reason = req.reason;
-            node.review_report = review_report;
-            node.compensating_plan = req.compensating_plan;
-            node.updated_at = req.updated_at;
-            w.revision = expected + 1;
-            Ok(w)
-        })
+        self.graph
+            .mutate_locked(expected, &actor, move |mut w, guard, _| {
+                let current = w
+                    .get(&req.id)
+                    .cloned()
+                    .ok_or_else(|| MineError::PlanNotFound {
+                        plan_id: req.id.clone(),
+                    })?;
+                if !matches!(
+                    current.status,
+                    PlanStatus::InProgress | PlanStatus::Implemented
+                ) {
+                    return Err(MineError::InvalidTransition {
+                        plan_id: req.id.clone(),
+                        from: current.status.as_str().to_string(),
+                        to: PlanStatus::Rejected.as_str().to_string(),
+                    });
+                }
+                current
+                    .status
+                    .validate_transition(&req.id, PlanStatus::Rejected)?;
+                if req.reason.trim().is_empty() {
+                    return Err(MineError::GraphInvalid {
+                        detail: "rejection requires a non-empty reason".to_string(),
+                    });
+                }
+                if req.compensating_plan.is_empty() {
+                    return Err(MineError::GraphInvalid {
+                        detail: "rejection requires a compensating plan".to_string(),
+                    });
+                }
+                if req.id.starts_with("plan") {
+                    validate_compensation_replacement(&req.id, &req.compensating_plan)?;
+                }
+                let review_report = validate_review_report(&root, &current, &req.review_report)?;
+                super::native_lifecycle::observe_rejection_intent(
+                    &root,
+                    &w,
+                    &req,
+                    &review_report,
+                    guard,
+                )?;
+                let node = w.get_mut(&req.id).expect("checked present above");
+                node.status = PlanStatus::Rejected;
+                node.rejection_reason = req.reason;
+                node.review_report = review_report;
+                node.compensating_plan = req.compensating_plan;
+                node.updated_at = req.updated_at;
+                w.revision = expected + 1;
+                Ok(w)
+            })
     }
 }
 
@@ -808,17 +1341,20 @@ impl<'a> PlanService<'a> {
 /// and MCP).
 #[derive(Debug, Clone)]
 pub struct PlanReleaseRequest {
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    pub expected_revision: u64,
     pub id: String,
     pub updated_at: String,
-    /// ADR-0013 release-time readiness re-check evidence for the node's
-    /// planning scope (computed by the CLI adapter before the transaction).
-    pub readiness_audit: crate::domain::plan_release::ReleaseReadinessAudit,
 }
 
 /// A request to rewire downstream successors off a REJECTED plan onto its
 /// registered compensating plan (shared by CLI and MCP).
 #[derive(Debug, Clone)]
 pub struct PlanRewireRequest {
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    pub expected_revision: u64,
     pub id: String,
     pub updated_at: String,
 }
@@ -827,9 +1363,12 @@ pub struct PlanRewireRequest {
 /// (ADR-0012; shared by CLI and MCP).
 #[derive(Debug, Clone)]
 pub struct PlanWithdrawRequest {
+    /// Graph revision observed by the caller, never refreshed internally.
+    pub expected_revision: u64,
     pub id: String,
     pub reason: String,
-    pub withdrawn_at: String,
+    pub operation_id: crate::domain::lifecycle_operation::OperationId,
+    pub actor: String,
 }
 
 /// Deterministic withdrawal outcome shared by the CLI envelope and the MCP
@@ -841,6 +1380,10 @@ pub struct PlanWithdrawal {
     pub status_after: String,
     pub withdrawn_at: String,
     pub cleaned_git_artifacts: bool,
+    pub revision_before: u64,
+    pub revision_after: u64,
+    pub operation: crate::domain::lifecycle_operation::LifecycleOperation,
+    pub replay: bool,
 }
 
 impl<'a> PlanService<'a> {
@@ -855,56 +1398,8 @@ impl<'a> PlanService<'a> {
         &self,
         req: PlanWithdrawRequest,
     ) -> MineResult<(PlanWorkspace, PlanWithdrawal)> {
-        let expected = self.graph.validate()?.revision;
-        let root = self.graph.repo_root().to_path_buf();
-        let withdrawal = std::cell::RefCell::new(Option::<PlanWithdrawal>::None);
-        let saved = self.graph.mutate(expected, |mut w| {
-            let current = w
-                .get(&req.id)
-                .cloned()
-                .ok_or_else(|| MineError::PlanNotFound {
-                    plan_id: req.id.clone(),
-                })?;
-            if !matches!(
-                current.status,
-                PlanStatus::Draft | PlanStatus::Blocked | PlanStatus::Ready
-            ) {
-                return Err(MineError::InvalidTransition {
-                    plan_id: req.id.clone(),
-                    from: current.status.as_str().to_string(),
-                    to: PlanStatus::Withdrawn.as_str().to_string(),
-                });
-            }
-            current
-                .status
-                .validate_transition(&req.id, PlanStatus::Withdrawn)?;
-            if req.reason.trim().is_empty() {
-                return Err(MineError::GraphInvalid {
-                    detail: "withdrawal requires a non-empty reason".to_string(),
-                });
-            }
-            let cleaned = withdraw_cleanup(&w, &current, &root)?;
-            let node = w.get_mut(&req.id).expect("checked present above");
-            node.status = PlanStatus::Withdrawn;
-            node.withdraw_reason = req.reason.clone();
-            node.withdrawn_at = req.withdrawn_at.clone();
-            node.updated_at = req.withdrawn_at.clone();
-            w.revision = expected + 1;
-            *withdrawal.borrow_mut() = Some(PlanWithdrawal {
-                id: req.id.clone(),
-                status_before: current.status.as_str().to_string(),
-                status_after: PlanStatus::Withdrawn.as_str().to_string(),
-                withdrawn_at: req.withdrawn_at.clone(),
-                cleaned_git_artifacts: cleaned,
-            });
-            Ok(w)
-        })?;
-        Ok((
-            saved,
-            withdrawal
-                .into_inner()
-                .expect("withdrawal DTO set on success"),
-        ))
+        super::native_plan_workspace::NativePlanWorkspace::new(self.graph)
+            .withdraw(req, &mut crate::domain::lifecycle_operation::NoInterruption)
     }
 
     /// Releases a `DRAFT` plan: `DRAFT -> READY` when every hard predecessor is
@@ -912,13 +1407,27 @@ impl<'a> PlanService<'a> {
     /// workspace and the unsatisfied predecessors (in stable order) for
     /// deterministic reporting.
     pub fn release(&self, req: PlanReleaseRequest) -> MineResult<PlanWorkspace> {
-        let expected = self.graph.validate()?.revision;
-        self.graph.mutate(expected, |mut w| {
+        let expected = req.expected_revision;
+        let root = self.graph.repo_root().to_path_buf();
+        self.graph.mutate(expected, &req.actor, |mut w| {
+            let node = w.get(&req.id).ok_or_else(|| MineError::PlanNotFound {
+                plan_id: req.id.clone(),
+            })?;
+            let scope = if node.planning_scope.is_empty() {
+                Path::new(&w.design_root)
+                    .parent()
+                    .and_then(Path::to_str)
+                    .ok_or_else(|| refusal("Design scope missing"))?
+                    .to_string()
+            } else {
+                node.planning_scope.clone()
+            };
+            let readiness = observe_planning_readiness(&root, &scope, &req.updated_at)?;
             crate::domain::plan_release::release_plan(
                 &mut w,
                 &req.id,
                 &req.updated_at,
-                Some(&req.readiness_audit),
+                Some(&readiness),
             )?;
             w.revision = expected + 1;
             Ok(w)
@@ -935,9 +1444,9 @@ impl<'a> PlanService<'a> {
         &self,
         req: PlanRewireRequest,
     ) -> MineResult<(PlanWorkspace, Vec<String>)> {
-        let expected = self.graph.validate()?.revision;
+        let expected = req.expected_revision;
         let affected_cell = std::cell::RefCell::new(Vec::<String>::new());
-        let saved = self.graph.mutate(expected, |mut w| {
+        let saved = self.graph.mutate(expected, &req.actor, |mut w| {
             let affected =
                 crate::domain::rewire::rewire_compensation(&mut w, &req.id, &req.updated_at)?;
             if !affected.is_empty() {

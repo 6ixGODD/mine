@@ -5,11 +5,11 @@
 //!
 //! These tests prove that `mine doctor --agents all` correctly handles:
 //! 1. a valid graph-less stable candidate (branch == configured stable,
-//!    no `docs/plan/`) reports healthy;
+//!    no `.mine/plan/`) reports healthy;
 //! 2. all four isolated Agent installations are healthy on that stable tree;
 //! 3. a development repository with an unexpectedly missing graph still fails;
 //! 4. an invalid graph still fails;
-//! 5. merely deleting `docs/plan/` on a non-stable branch does NOT falsely
+//! 5. merely deleting `.mine/plan/` on a non-stable branch does NOT falsely
 //!    convert the repository into a valid stable tree;
 //! 6. Agent drift or missing files still produces unhealthy Agent diagnostics;
 //! 7. repository failure does not suppress the computed Agent diagnostics
@@ -174,7 +174,7 @@ fn run_doctor(repo: &Path, config_root: &Path, agents: &str) -> (i32, serde_json
 
 /// Builds an isolated stable candidate: a temp git repo on the default
 /// branch (detected by `mine init` as the stable branch), with `.mine/config.toml`,
-/// `docs/design/.mine-design.toml`, `docs/design/index.md`, and NO `docs/plan/`.
+/// `.mine/design/.mine-design.toml`, `.mine/design/index.md`, and NO `.mine/plan/`.
 /// Returns the temp dir.
 fn build_stable_candidate() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
@@ -182,17 +182,17 @@ fn build_stable_candidate() -> tempfile::TempDir {
     init_git_repo(repo);
     // `mine init` detects the current branch as the stable branch and writes
     // it into `.mine/config.toml` under `branches.stable`. It creates the
-    // design scaffold but does NOT create `docs/plan/`.
+    // design scaffold but does NOT create `.mine/plan/`.
     let (exit, env) = run_mine(repo, repo, &["init", "--format", "json"]);
     assert_eq!(exit, 0, "mine init failed: {env}");
     assert!(repo.join(".mine/config.toml").exists(), "config created");
     assert!(
-        repo.join("docs/design/.mine-design.toml").exists(),
+        repo.join(".mine/design/.mine-design.toml").exists(),
         "marker created"
     );
-    assert!(repo.join("docs/design/index.md").exists(), "index created");
+    assert!(repo.join(".mine/design/index.md").exists(), "index created");
     assert!(
-        !repo.join("docs/plan").exists(),
+        !repo.join(".mine/plan").exists(),
         "no plan workspace on stable"
     );
     tmp
@@ -216,7 +216,7 @@ fn configured_stable_branch(repo: &Path) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: stable candidate without docs/plan/ passes `mine doctor --agents all`
+// Test 1: stable candidate without .mine/plan/ passes `mine doctor --agents all`
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -314,9 +314,9 @@ fn dev_repo_with_missing_graph_fails() {
     git_checkout_b(repo, "dev");
     assert_ne!(git_branch(repo), configured_stable_branch(repo));
 
-    // No docs/plan/ exists (mine init didn't create it). On a dev branch,
+    // No .mine/plan/ exists (mine init didn't create it). On a dev branch,
     // the missing graph is a real failure.
-    assert!(!repo.join("docs/plan").exists());
+    assert!(!repo.join(".mine/plan").exists());
 
     let (exit, env, _) = run_doctor(repo, cfg_tmp.path(), "all");
     assert_ne!(exit, 0, "doctor must fail on dev repo with missing graph");
@@ -360,9 +360,9 @@ fn invalid_graph_fails_on_any_branch() {
     // We're still on the stable branch. Create a corrupt graph file.
     // Even on the stable branch, a present-but-invalid graph is a failure
     // (malformed repository), NOT "not applicable".
-    std::fs::create_dir_all(repo.join("docs/plan")).unwrap();
+    std::fs::create_dir_all(repo.join(".mine/plan")).unwrap();
     std::fs::write(
-        repo.join("docs/plan/execution-graph.toml"),
+        repo.join(".mine/plan/execution-graph.toml"),
         "this is not valid TOML {{{",
     )
     .unwrap();
@@ -391,7 +391,7 @@ fn invalid_graph_fails_on_any_branch() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: merely deleting docs/plan/ cannot falsely convert to stable tree
+// Test 5: merely deleting .mine/plan/ cannot falsely convert to stable tree
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -403,22 +403,22 @@ fn deleting_plan_does_not_falsely_convert_to_stable() {
     // Switch to dev (non-stable branch).
     git_checkout_b(repo, "dev");
 
-    // Simulate "merely deleting docs/plan/" — create it, then delete it.
-    std::fs::create_dir_all(repo.join("docs/plan")).unwrap();
+    // Simulate "merely deleting .mine/plan/" — create it, then delete it.
+    std::fs::create_dir_all(repo.join(".mine/plan")).unwrap();
     std::fs::write(
-        repo.join("docs/plan/execution-graph.toml"),
+        repo.join(".mine/plan/execution-graph.toml"),
         "revision = 1\nworkspace_id = \"test\"\nstable_branch = \"master\"\nintegration_branch = \"dev\"\nplans = []\n",
     )
     .unwrap();
-    assert!(repo.join("docs/plan").exists());
-    std::fs::remove_dir_all(repo.join("docs/plan")).unwrap();
-    assert!(!repo.join("docs/plan").exists());
+    assert!(repo.join(".mine/plan").exists());
+    std::fs::remove_dir_all(repo.join(".mine/plan")).unwrap();
+    assert!(!repo.join(".mine/plan").exists());
 
     // On dev branch, the missing graph must NOT be treated as "not applicable".
     let (exit, env, _) = run_doctor(repo, cfg_tmp.path(), "all");
     assert_ne!(
         exit, 0,
-        "doctor must fail: deleting docs/plan/ on dev does not make a stable tree"
+        "doctor must fail: deleting .mine/plan/ on dev does not make a stable tree"
     );
 
     let checks = env["error"]["details"]["checks"]
@@ -431,7 +431,7 @@ fn deleting_plan_does_not_falsely_convert_to_stable() {
         .expect("graph check exists");
     assert_eq!(
         graph_check["ok"], false,
-        "graph must fail: not a stable tree just because docs/plan/ is absent"
+        "graph must fail: not a stable tree just because .mine/plan/ is absent"
     );
     assert!(
         !graph_check["message"]

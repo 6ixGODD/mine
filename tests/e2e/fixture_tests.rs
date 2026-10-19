@@ -6,7 +6,7 @@
 //! 1. New repository — `bootstrap_tests::mine_init_creates_only_approved_skeleton`
 //! 2. Large old repository without design — `large_old_repo_without_design`
 //! 3. Stale managed design — `stale_managed_design_preserved_and_flagged`
-//! 4. Legacy unmarked design conflict — `bootstrap_tests::mine_init_backs_up_legacy_unmarked_design`
+//! 4. Unmarked owned design conflict — `bootstrap_tests::mine_init_refuses_unmarked_owned_design_without_mutation`
 //! 5. Protected design decision — `protected_design_decision_not_overwritten`
 //! 6. Unscoped incomplete coverage — `unscoped_incomplete_coverage_reported`
 //!
@@ -46,7 +46,7 @@ fn init_git_repo(dir: &std::path::Path) {
     Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["init", "--quiet"])
+        .args(["init", "--quiet", "-b", "master"])
         .status()
         .unwrap();
     Command::new("git")
@@ -111,11 +111,11 @@ fn large_old_repo_without_design_preserves_code_and_init_creates_skeleton() {
         "config created"
     );
     assert!(
-        tmp.path().join("docs/design/.mine-design.toml").exists(),
+        tmp.path().join(".mine/design/.mine-design.toml").exists(),
         "marker created"
     );
     assert!(
-        tmp.path().join("docs/design/index.md").exists(),
+        tmp.path().join(".mine/design/index.md").exists(),
         "index created"
     );
 
@@ -135,7 +135,7 @@ fn large_old_repo_without_design_preserves_code_and_init_creates_skeleton() {
 
     // No plan workspace, no branches, no extra commits.
     assert!(
-        !tmp.path().join("docs/plan").exists(),
+        !tmp.path().join(".mine/plan").exists(),
         "no plan workspace created"
     );
     let branches = Command::new("git")
@@ -178,15 +178,15 @@ fn stale_managed_design_marker_preserved_and_design_validates() {
     run(&["init", "--format", "json"], tmp.path());
 
     // Add a managed design leaf that is "stale" (describes old behavior).
-    std::fs::create_dir_all(tmp.path().join("docs/design/architecture")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".mine/design/architecture")).unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/architecture/index.md"),
+        tmp.path().join(".mine/design/architecture/index.md"),
         "# Architecture\n\nOld design that doesn't match current code.\n",
     )
     .unwrap();
     // Update the root index to link to it.
     std::fs::write(
-        tmp.path().join("docs/design/index.md"),
+        tmp.path().join(".mine/design/index.md"),
         "# Design Index\n\n- [Architecture](architecture/index.md)\n",
     )
     .unwrap();
@@ -196,7 +196,8 @@ fn stale_managed_design_marker_preserved_and_design_validates() {
     assert_eq!(exit, 0, "idempotent init preserves marker: {env}");
 
     // Marker is preserved (not regenerated).
-    let marker = std::fs::read_to_string(tmp.path().join("docs/design/.mine-design.toml")).unwrap();
+    let marker =
+        std::fs::read_to_string(tmp.path().join(".mine/design/.mine-design.toml")).unwrap();
     assert!(
         marker.contains("managed_by = \"MINE\""),
         "MINE ownership proven"
@@ -209,12 +210,12 @@ fn stale_managed_design_marker_preserved_and_design_validates() {
     // Unrelated design content survives.
     assert!(
         tmp.path()
-            .join("docs/design/architecture/index.md")
+            .join(".mine/design/architecture/index.md")
             .exists(),
         "stale leaf preserved"
     );
     assert_eq!(
-        std::fs::read_to_string(tmp.path().join("docs/design/architecture/index.md")).unwrap(),
+        std::fs::read_to_string(tmp.path().join(".mine/design/architecture/index.md")).unwrap(),
         "# Architecture\n\nOld design that doesn't match current code.\n"
     );
 
@@ -239,13 +240,13 @@ fn protected_design_decision_not_silently_overwritten() {
     run(&["init", "--format", "json"], tmp.path());
 
     // User writes a protected design decision.
-    std::fs::create_dir_all(tmp.path().join("docs/design/decisions")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".mine/design/decisions")).unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/decisions/0001-protected.md"),
+        tmp.path().join(".mine/design/decisions/0001-protected.md"),
         "# ADR-0001: Protected Decision\n\n## Status\nProtected by user.\n\n## Decision\nUse approach X, not approach Y, regardless of current code.\n",
     ).unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/index.md"),
+        tmp.path().join(".mine/design/index.md"),
         "# Design Index\n\n- [ADR-0001](decisions/0001-protected.md)\n",
     )
     .unwrap();
@@ -254,7 +255,7 @@ fn protected_design_decision_not_silently_overwritten() {
     let (exit, _env) = run(&["init", "--format", "json"], tmp.path());
     assert_eq!(exit, 0, "init preserves protected design");
 
-    let adr = std::fs::read_to_string(tmp.path().join("docs/design/decisions/0001-protected.md"))
+    let adr = std::fs::read_to_string(tmp.path().join(".mine/design/decisions/0001-protected.md"))
         .unwrap();
     assert!(
         adr.contains("Protected by user"),
@@ -303,19 +304,32 @@ fn unscoped_incomplete_coverage_reported_not_silently_completed() {
 
     // The init outcome does not generate architecture from code.
     assert!(
-        !tmp.path().join("docs/design/architecture").exists(),
+        !tmp.path().join(".mine/design/architecture").exists(),
         "init does not infer/invent architecture from code"
     );
 
     // The design index is the MINE scaffold, not a code-derived architecture.
-    let index = std::fs::read_to_string(tmp.path().join("docs/design/index.md")).unwrap();
+    let index = std::fs::read_to_string(tmp.path().join(".mine/design/index.md")).unwrap();
     assert!(
         !index.contains("module0") && !index.contains("Module 0"),
         "init does not fabricate architecture from code scanning"
     );
 
     // A workspace open does not claim complete coverage either.
-    let (exit, _env) = run(&["workspace", "open", "--format", "json"], tmp.path());
+    super::managed_private_dev(tmp.path());
+    let (exit, _env) = run(
+        &[
+            "workspace",
+            "open",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "0",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+    );
     assert_eq!(exit, 0, "workspace opens without inferring architecture");
 
     // The system requires explicit follow-up (mine-arch or mine-sync) rather

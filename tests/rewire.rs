@@ -4,7 +4,7 @@
 //! `mine plan rewire-compensation --id` integration tests.
 //!
 //! Drives the CLI over isolated temp repos seeded with controlled graphs; the
-//! live repository graph is snapshotted before/after and asserted unchanged.
+//! on-disk development fixture is checked for accidental edits (not a Root audit).
 
 mod common;
 
@@ -17,7 +17,7 @@ fn assert_live_unchanged(before: &[u8]) {
     assert_eq!(
         before,
         live_graph_bytes(),
-        "live repo graph unchanged by temp-copy test"
+        "development fixture unchanged by temp-copy test"
     );
 }
 
@@ -25,11 +25,16 @@ fn seed_rewire_graph(
     extra: Vec<mine::domain::graph::PlanNode>,
 ) -> (tempfile::TempDir, std::path::PathBuf) {
     let mut plans = vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        node("04", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Ready, &["03"], &[]),
-        node("06", PlanStatus::Blocked, &["04", "05"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan04", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan06", PlanStatus::Blocked, &["plan04", "plan05"], &[]),
     ];
     plans.extend(extra);
     seeded_repo(plans)
@@ -44,8 +49,13 @@ fn rewire_success_hard_predecessors() {
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -57,17 +67,28 @@ fn rewire_success_hard_predecessors() {
         env["revision_after"].as_u64().unwrap(),
         env["revision_before"].as_u64().unwrap() + 1
     );
-    assert_eq!(env["data"]["rejected_plan"], "05");
-    assert_eq!(env["data"]["compensating_plan"], "05-1");
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(env["data"]["rejected_plan"], "plan05");
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(env["data"]["compensating_plan"], "plan05-C01");
     assert_eq!(
         env["data"]["affected_successors"],
-        serde_json::json!(["06"])
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        serde_json::json!(["plan06"])
     );
     let ws = load_graph(&repo);
-    assert_eq!(ws.get("06").unwrap().hard_predecessors, vec!["04", "05-1"]);
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        ws.get("plan06").unwrap().hard_predecessors,
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        vec!["plan04", "plan05-C01"]
+    );
     // 05 stays REJECTED, untouched.
-    assert_eq!(ws.get("05").unwrap().status, PlanStatus::Rejected);
-    assert_eq!(ws.get("05").unwrap().compensating_plan, "05-1");
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(ws.get("plan05").unwrap().status, PlanStatus::Rejected);
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(ws.get("plan05").unwrap().compensating_plan, "plan05-C01");
     assert_live_unchanged(&live);
 }
 
@@ -79,39 +100,69 @@ fn rewire_regenerates_markdown_view() {
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
     );
     assert_eq!(outcome.exit_code, 0, "{env}");
-    let md = std::fs::read_to_string(repo.join("docs/plan/execution-graph.md")).unwrap();
-    assert!(md.contains("05-1"), "MD view reflects rewired predecessor");
+    let md = std::fs::read_to_string(repo.join(".mine/plan/execution-graph.md")).unwrap();
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert!(
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        md.contains("plan05-C01"),
+        "MD view reflects rewired predecessor"
+    );
     // 06 row now names 05-1 (and 04), not 05.
-    let line06 = md.lines().find(|l| l.starts_with("| 06 |")).unwrap();
-    assert!(line06.contains("05-1"));
-    assert!(!line06.contains("05 |") || line06.contains("05-1")); // not the bare 05
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    let line06 = md.lines().find(|l| l.starts_with("| plan06 |")).unwrap();
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert!(line06.contains("plan05-C01"));
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert!(!line06.contains("05 |") || line06.contains("plan05-C01")); // not the bare 05
 }
 
 #[test]
 fn rewire_idempotent_no_op() {
     let live = live_graph_bytes();
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        node("04", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Accepted, &["03"], &[]),
-        node("06", PlanStatus::Blocked, &["04", "05-1"], &[]), // already rewired
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan04", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-C01", PlanStatus::Accepted, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node(
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan06",
+            PlanStatus::Blocked,
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            &["plan04", "plan05-C01"],
+            &[],
+        ), // already rewired
     ]);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -122,7 +173,7 @@ fn rewire_idempotent_no_op() {
         env["revision_before"], env["revision_after"],
         "no bump on no-op"
     );
-    let after = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let after = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     assert_eq!(before, after, "temp bytes identical on idempotent no-op");
     assert_live_unchanged(&live);
 }
@@ -130,19 +181,29 @@ fn rewire_idempotent_no_op() {
 #[test]
 fn rewire_not_rejected_original_errors() {
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        node("05", PlanStatus::Implemented, &["03"], &[]),
-        node("05-1", PlanStatus::Ready, &["03"], &[]),
-        node("06", PlanStatus::Blocked, &["04", "05"], &[]),
-        node("04", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05", PlanStatus::Implemented, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan06", PlanStatus::Blocked, &["plan04", "plan05"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan04", PlanStatus::Accepted, &[], &[]),
     ]);
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -155,25 +216,33 @@ fn rewire_not_rejected_original_errors() {
 fn rewire_empty_compensating_plan_errors() {
     let live = live_graph_bytes();
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "", &["03"]),
-        node("06", PlanStatus::Draft, &["05"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan06", PlanStatus::Draft, &["plan05"], &[]),
     ]);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
     );
     assert_eq!(outcome.exit_code, 4, "{env}");
     assert_eq!(env["error"]["code"], "MINE_GRAPH_INVALID");
-    let after = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let after = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     assert_eq!(before, after);
     assert_live_unchanged(&live);
 }
@@ -181,17 +250,25 @@ fn rewire_empty_compensating_plan_errors() {
 #[test]
 fn rewire_missing_replacement_errors() {
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("06", PlanStatus::Draft, &["05"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan06", PlanStatus::Draft, &["plan05"], &[]),
     ]);
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -203,18 +280,27 @@ fn rewire_missing_replacement_errors() {
 #[test]
 fn rewire_rejected_replacement_errors() {
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        rejected_node("05-1", "", &["03"]),
-        node("06", PlanStatus::Draft, &["05"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05-C01", "", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan06", PlanStatus::Draft, &["plan05"], &[]),
     ]);
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -233,32 +319,44 @@ fn rewire_locked_successor_errors_bytes_unchanged() {
         PlanStatus::Rejected,
     ] {
         let (_tmp, repo) = seeded_repo(vec![
-            node("03", PlanStatus::Accepted, &[], &[]),
-            node("04", PlanStatus::Accepted, &[], &[]),
-            rejected_node("05", "05-1", &["03"]),
-            node("05-1", PlanStatus::Ready, &["03"], &[]),
-            node("06", status, &["04", "05"], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan03", PlanStatus::Accepted, &[], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan04", PlanStatus::Accepted, &[], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            rejected_node("plan05", "plan05-C01", &["plan03"]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan06", status, &["plan04", "plan05"], &[]),
         ]);
-        let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+        let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
         let (outcome, env) = dispatch_json(
             &repo,
             &[
                 "plan",
                 "rewire-compensation",
+                "--actor",
+                "fixture-coordinator",
+                "--expected-revision",
+                "72",
                 "--id",
-                "05",
+                // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+                "plan05",
                 "--format",
                 "json",
             ],
         );
         assert_eq!(outcome.exit_code, 3, "gate exit for {status:?}: {env}");
         assert_eq!(env["error"]["code"], "MINE_REWIRE_SUCCESSOR_LOCKED");
-        let after = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+        let after = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
         assert_eq!(before, after, "temp bytes unchanged ({status:?})");
         let ws = load_graph(&repo);
         assert_eq!(
-            ws.get("06").unwrap().hard_predecessors,
-            vec!["04", "05"],
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            ws.get("plan06").unwrap().hard_predecessors,
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            vec!["plan04", "plan05"],
             "06 unchanged"
         );
     }
@@ -266,52 +364,86 @@ fn rewire_locked_successor_errors_bytes_unchanged() {
 }
 
 #[test]
-fn rewire_cycle_errors_bytes_unchanged() {
+fn rewire_invalid_compensation_cycle_is_refused_without_mutation() {
     let live = live_graph_bytes();
-    let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        node("04", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Draft, &["06"], &[]),
-        node("06", PlanStatus::Draft, &["04", "05"], &[]),
-    ]);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let (_tmp, repo) = seed_rewire_graph(vec![]);
+    // A valid compensation inherits all ordered base predecessors, so the old
+    // cycle construction is already invalid before rewiring. Inject that exact
+    // malformed persisted input and prove public refusal without publishing.
+    let mut invalid = load_graph(&repo);
+    // mine-release-allow-plan-reference: deliberately malformed compensation fixture
+    invalid.get_mut("plan05-C01").unwrap().hard_predecessors = vec!["plan06".into()];
+    std::fs::write(
+        repo.join(".mine/plan/execution-graph.toml"),
+        toml::to_string(&invalid).unwrap(),
+    )
+    .unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
+    let view = std::fs::read(repo.join(".mine/plan/execution-graph.md")).unwrap();
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
     );
     assert_eq!(outcome.exit_code, 4, "{env}");
-    assert_eq!(env["error"]["code"], "MINE_GRAPH_CYCLE");
-    let after = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    assert_eq!(env["error"]["code"], "MINE_GRAPH_INVALID");
+    assert!(
+        env["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("must inherit the complete ordered hard predecessors"),
+        "{env}"
+    );
+    let after = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     assert_eq!(before, after);
+    assert_eq!(
+        std::fs::read(repo.join(".mine/plan/execution-graph.md")).unwrap(),
+        view
+    );
     assert_live_unchanged(&live);
 }
 
 #[test]
 fn rewire_sibling_id_not_rewired() {
-    // A successor that references the sibling-looking id "050" must NOT be
-    // rewired when rerouting "05". Only exact "05" predecessor entries change.
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    // A successor that references the sibling-looking id "plan05-01" must NOT be
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    // rewired when rerouting "plan05". Only exact "plan05" predecessor entries change.
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Ready, &["03"], &[]),
-        node("050", PlanStatus::Accepted, &[], &[]),
-        node("07", PlanStatus::Draft, &["050"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-01", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan07", PlanStatus::Draft, &["plan05-01"], &[]),
     ]);
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -320,8 +452,10 @@ fn rewire_sibling_id_not_rewired() {
     assert_eq!(env["data"]["affected_successors"], serde_json::json!([]));
     let ws = load_graph(&repo);
     assert_eq!(
-        ws.get("07").unwrap().hard_predecessors,
-        vec!["050"],
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        ws.get("plan07").unwrap().hard_predecessors,
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        vec!["plan05-01"],
         "sibling-looking 050 predecessor untouched"
     );
 }
@@ -329,18 +463,27 @@ fn rewire_sibling_id_not_rewired() {
 #[test]
 fn rewire_soft_predecessor() {
     let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Ready, &["03"], &[]),
-        node("09", PlanStatus::Draft, &[], &["05"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan03", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        rejected_node("plan05", "plan05-C01", &["plan03"]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        node("plan09", PlanStatus::Draft, &[], &["plan05"]),
     ]);
     let (outcome, env) = dispatch_json(
         &repo,
         &[
             "plan",
             "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
             "--id",
-            "05",
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            "plan05",
             "--format",
             "json",
         ],
@@ -348,36 +491,62 @@ fn rewire_soft_predecessor() {
     assert_eq!(outcome.exit_code, 0, "{env}");
     assert_eq!(
         env["data"]["affected_successors"],
-        serde_json::json!(["09"])
+        // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+        serde_json::json!(["plan09"])
     );
     let ws = load_graph(&repo);
-    assert_eq!(ws.get("09").unwrap().soft_predecessors, vec!["05-1"]);
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        ws.get("plan09").unwrap().soft_predecessors,
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        vec!["plan05-C01"]
+    );
 }
 
 #[test]
 fn rewire_missing_id_flag_is_usage() {
     let (_tmp, repo) = seed_rewire_graph(vec![]);
-    let (outcome, env) = dispatch_json(&repo, &["plan", "rewire-compensation", "--format", "json"]);
+    let (outcome, env) = dispatch_json(
+        &repo,
+        &[
+            "plan",
+            "rewire-compensation",
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            "72",
+            "--format",
+            "json",
+        ],
+    );
     assert_eq!(outcome.exit_code, 2);
     assert_eq!(env["error"]["code"], "MINE_USAGE");
 }
 
 /// Two concurrent `mine plan rewire-compensation --id 05` invocations against
 /// the same isolated temp repo must produce exactly one real reroute. The
-/// competing invocation may either lose via `MINE_REVISION_CONFLICT` or observe
-/// the already-rewired graph and complete as an idempotent no-op. The test
-/// verifies observable graph invariants rather than requiring one scheduler
-/// interleaving.
+/// competing invocation retains the same observer revision and must lose via
+/// `MINE_REVISION_CONFLICT`, without silently refreshing it. A separate
+/// current-revision test above covers idempotent no-op behavior.
 #[test]
 fn concurrent_rewire_is_resolved_by_revision_conflict() {
     let live = live_graph_bytes();
-    let (_tmp, repo) = seeded_repo(vec![
-        node("03", PlanStatus::Accepted, &[], &[]),
-        node("04", PlanStatus::Accepted, &[], &[]),
-        rejected_node("05", "05-1", &["03"]),
-        node("05-1", PlanStatus::Ready, &["03"], &[]),
-        node("06", PlanStatus::Blocked, &["04", "05"], &[]),
-    ]);
+    let (_tmp, repo) = common::seeded_repo_with_lock_timeout(
+        vec![
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan03", PlanStatus::Accepted, &[], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan04", PlanStatus::Accepted, &[], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            rejected_node("plan05", "plan05-C01", &["plan03"]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan05-C01", PlanStatus::Ready, &["plan03"], &[]),
+            // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            node("plan06", PlanStatus::Blocked, &["plan04", "plan05"], &[]),
+        ],
+        30_000,
+    );
     let n = load_graph(&repo).revision;
     let repo_str = repo.to_str().unwrap().to_string();
     let repo_a = repo_str.clone();
@@ -389,8 +558,13 @@ fn concurrent_rewire_is_resolved_by_revision_conflict() {
                 &[
                     "plan",
                     "rewire-compensation",
+                    "--actor",
+                    "fixture-coordinator",
+                    "--expected-revision",
+                    "72",
                     "--id",
-                    "05",
+                    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+                    "plan05",
                     "--format",
                     "json",
                 ],
@@ -405,8 +579,13 @@ fn concurrent_rewire_is_resolved_by_revision_conflict() {
                 &[
                     "plan",
                     "rewire-compensation",
+                    "--actor",
+                    "fixture-coordinator",
+                    "--expected-revision",
+                    "72",
                     "--id",
-                    "05",
+                    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+                    "plan05",
                     "--format",
                     "json",
                 ],
@@ -422,27 +601,31 @@ fn concurrent_rewire_is_resolved_by_revision_conflict() {
     let loser_conflicts = |env: &serde_json::Value| {
         env["ok"] == false && env["error"]["code"] == "MINE_REVISION_CONFLICT"
     };
-    let loser_no_op = |env: &serde_json::Value| {
-        env["ok"] == true && env["data"]["affected_successors"] == serde_json::json!([])
-    };
     let winner_rewired = |env: &serde_json::Value| {
         env["ok"] == true
-            && env["data"]["affected_successors"] == serde_json::json!(["06"])
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+            && env["data"]["affected_successors"] == serde_json::json!(["plan06"])
             && env["revision_after"].as_u64().unwrap()
                 == env["revision_before"].as_u64().unwrap() + 1
     };
-    let (winner, _loser) =
-        if winner_rewired(&env_a) && (loser_conflicts(&env_b) || loser_no_op(&env_b)) {
-            (&env_a, &env_b)
-        } else if winner_rewired(&env_b) && (loser_conflicts(&env_a) || loser_no_op(&env_a)) {
-            (&env_b, &env_a)
-        } else {
-            panic!("expected one real reroute and one honest loser; got a={env_a} b={env_b}")
-        };
+    let (winner, _loser) = if winner_rewired(&env_a) && loser_conflicts(&env_b) {
+        (&env_a, &env_b)
+    } else if winner_rewired(&env_b) && loser_conflicts(&env_a) {
+        (&env_b, &env_a)
+    } else {
+        panic!("expected one real reroute and one honest loser; got a={env_a} b={env_b}")
+    };
 
     let ws = load_graph(&repo);
-    assert_eq!(ws.get("06").unwrap().hard_predecessors, vec!["04", "05-1"]);
-    assert_eq!(ws.get("05").unwrap().status, PlanStatus::Rejected);
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        ws.get("plan06").unwrap().hard_predecessors,
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        vec!["plan04", "plan05-C01"]
+    );
+    // mine-release-allow-plan-reference: isolated canonical lifecycle fixture
+    assert_eq!(ws.get("plan05").unwrap().status, PlanStatus::Rejected);
     assert_eq!(
         ws.revision,
         n + 1,
@@ -457,11 +640,11 @@ fn concurrent_rewire_is_resolved_by_revision_conflict() {
 }
 
 #[test]
-fn live_graph_byte_unchanged_after_rewire_suite() {
+fn development_fixture_unchanged_after_rewire_suite() {
     let before = live_graph_bytes();
     let after = live_graph_bytes();
     assert_eq!(
         before, after,
-        "live repo graph unchanged by the rewire suite"
+        "development fixture unchanged by the rewire suite"
     );
 }

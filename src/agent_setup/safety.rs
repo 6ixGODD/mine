@@ -43,14 +43,13 @@ pub struct SafetyGuard {
 }
 
 impl SafetyGuard {
-    /// Constructs a guard bound to `root`. The root is canonicalized when it
-    /// exists; when it does not (a fresh install into a new temp root), the
-    /// absolute, lexically-normalized form is used so child containment can
-    /// still be verified.
+    /// Constructs a guard bound to `root`. Resolve its longest existing prefix
+    /// just like write targets, even before a fresh installation creates the
+    /// root. This keeps physical path aliases consistent across creation.
     #[must_use]
     pub fn new(root: &Path) -> Self {
         let lexical_root = normalize_absolute(root);
-        let canonical = root.canonicalize().unwrap_or_else(|_| lexical_root.clone());
+        let canonical = canonicalize_longest_existing_prefix(&lexical_root);
         Self {
             root: canonical,
             lexical_root,
@@ -230,6 +229,49 @@ mod tests {
             .ensure_within_root(Path::new("skills/mine-arch/SKILL.md"))
             .unwrap();
         assert!(p.ends_with("skills/mine-arch/SKILL.md"));
+    }
+
+    #[test]
+    fn fresh_root_remains_contained_after_it_is_created() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("new/config");
+        let g = SafetyGuard::new(&root);
+        let candidate = root.join("skills/mine-arch/SKILL.md");
+        assert!(g.ensure_within_root(&candidate).is_ok());
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(g.ensure_within_root(&candidate).is_ok());
+        assert!(g.ensure_within_root(Path::new("../../outside")).is_err());
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn fresh_root_still_rejects_a_child_link_to_outside() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("new/config");
+        let outside = tmp.path().join("outside");
+        let g = SafetyGuard::new(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        let link = root.join("skills");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        #[cfg(windows)]
+        assert!(
+            std::process::Command::new("powershell.exe")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "New-Item -ItemType Junction -Path $env:MINE_TEST_LINK -Target $env:MINE_TEST_TARGET | Out-Null",
+                ])
+                .env("MINE_TEST_LINK", &link)
+                .env("MINE_TEST_TARGET", &outside)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(g.ensure_within_root(&link.join("SKILL.md")).is_err());
+        assert!(!outside.join("SKILL.md").exists());
     }
 
     #[test]

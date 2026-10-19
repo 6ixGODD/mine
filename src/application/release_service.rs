@@ -30,11 +30,24 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod curation;
+pub(crate) mod retained;
+
+/// Explicit operation-selected objective diagnostics, never gate admission.
+pub use retained::diagnostic::ReleaseDiagnostic;
+pub fn diagnose(
+    root: &Path,
+    id: &crate::domain::lifecycle_operation::OperationId,
+) -> MineResult<ReleaseDiagnostic> {
+    retained::diagnose(root, id)
+}
+
 use serde::Serialize;
 
+use crate::domain::config::MineConfig;
 use crate::domain::error::{MineError, MineResult};
 use crate::domain::status::PlanStatus;
-use crate::infrastructure::git::{self, GitEvidence};
+use crate::infrastructure::git;
 use crate::infrastructure::toml_store::TomlStore;
 
 /// The release-preflight result.
@@ -57,6 +70,7 @@ pub struct ReleasePreflight {
     pub no_plan_artifacts_on_stable: bool,
     pub no_design_backups_on_stable: bool,
     pub pending_agent_transactions: Vec<String>,
+    pub pending_operations: Vec<crate::infrastructure::operation_store::OperationObservation>,
     pub rejections_without_compensation: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -71,55 +85,114 @@ pub struct CleanupPreview {
     pub total: usize,
 }
 
-/// Runs the full release preflight against `repo_root`. Returns the preflight
+/// Runs pre-integration release preflight against `repo_root`. Returns the preflight
 /// result with `can_release = true` only when every gate passes. No mutation.
 pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
+    let config = crate::cli::context::load_config_or_error(repo_root)?;
+    let store = TomlStore::from_configuration(repo_root, &config)?;
+    store.with_coordinator_lock(|guard| preflight_locked(repo_root, &config, &store, guard))
+}
+
+fn preflight_locked(
+    repo_root: &Path,
+    config: &crate::domain::config::MineConfig,
+    store: &TomlStore,
+    guard: &crate::infrastructure::file_lock::FileLock,
+) -> MineResult<ReleasePreflight> {
     let mut errors = Vec::new();
-
-    // Load repository configuration to resolve configured branch names.
-    // Fall back to defaults only when config is absent (first-time preflight
-    // before init, which will report can_release=false anyway).
-    let config = crate::cli::context::load_config(repo_root);
-    let stable_branch = config
-        .as_ref()
-        .map(|c| c.branches.stable.as_str())
-        .unwrap_or("master");
-
-    // 1. Git evidence: working tree clean, dev/stable commits.
-    let git_ev = GitEvidence::collect(repo_root);
-    let dev_commit = git::head_commit(repo_root).unwrap_or_default();
-    let stable_commit = run_git_rev_parse(repo_root, stable_branch)?;
-    let working_tree_clean = git_ev.clean;
-    let stable_unchanged = stable_commit_exists_and_matches_expected(repo_root, &stable_commit)?;
-
-    // A configured stable branch that has no commit (missing in git) must
-    // never be used silently: it is almost always a stale config recorded by
-    // an older MINE version (e.g. `master` in a `main`-only repository).
-    // Report it as a decisive error with an actionable repair path instead of
-    // letting the empty commit propagate into the result.
-    if stable_commit.is_empty() && config.is_some() {
-        errors.push(format!(
-            "configured stable branch '{stable_branch}' not found in this repository \
-             (run `mine init` to repair .mine/config.toml)"
+    let stable_branch = config.branches.stable.as_str();
+    let mut git = crate::infrastructure::graph_checkpoint::checkpoint_git(repo_root, None)
+        .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+    crate::infrastructure::graph_checkpoint::observe_index_policy(&mut git)
+        .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+    let identity = git.text(&[
+        "rev-parse",
+        "--path-format=absolute",
+        "--show-toplevel",
+        "--absolute-git-dir",
+        "--git-common-dir",
+    ])?;
+    let identity = identity.lines().collect::<Vec<_>>();
+    if identity.len() != 3
+        || Path::new(identity[0]).canonicalize()? != repo_root.canonicalize()?
+        || Path::new(identity[1]).canonicalize()? != Path::new(identity[2]).canonicalize()?
+    {
+        return Err(super::native_evidence::refused(
+            "release preflight requires actual Root",
         ));
     }
-
+    if git.text(&["symbolic-ref", "-q", "HEAD"])?
+        != format!("refs/heads/{}", config.branches.integration)
+    {
+        errors.push("pre-integration release preflight requires Root integration checkout".into());
+    }
+    let dev_commit = git.text(&["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let stable_commit = git
+        .refs()?
+        .into_iter()
+        .find(|reference| reference.name == format!("refs/heads/{stable_branch}"))
+        .map(|reference| reference.oid)
+        .unwrap_or_default();
+    let working_tree_clean = git
+        .run(
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+            b"",
+        )?
+        .is_empty();
     if !working_tree_clean {
         errors.push("working tree is dirty".to_string());
     }
-
-    // 2. All plans terminal (ACCEPTED or REJECTED with compensation).
-    let store = TomlStore::new(repo_root);
     let ws = store.load()?;
-    let all_plans_terminal = ws
-        .plans
-        .iter()
-        .all(|p| matches!(p.status, PlanStatus::Accepted | PlanStatus::Rejected));
+    let stable_unchanged = !stable_commit.is_empty() && stable_commit == ws.stable_baseline_commit;
+    if stable_commit.is_empty() {
+        errors.push(format!(
+            "configured stable branch '{stable_branch}' not found in this repository"
+        ));
+    } else {
+        git.validate_commits(&[dev_commit.clone(), stable_commit.clone()])?;
+        if !stable_unchanged {
+            errors
+                .push("actual stable tip differs from the stored pre-integration baseline".into());
+        }
+        if !git.is_ancestor(&stable_commit, &dev_commit)? {
+            errors.push("stable baseline is not an ancestor of development source".into());
+        }
+    }
+    if ws.workspace_id.is_empty()
+        || ws.stable_branch != config.branches.stable
+        || ws.integration_branch != config.branches.integration
+        || ws.design_root != config.design.root
+    {
+        errors.push("graph/config workspace identity differs".into());
+    }
+    let history = crate::infrastructure::operation_store::RepositoryJournal::under_lock(
+        repo_root,
+        &config.repository_id,
+        guard,
+    )
+    .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+    let observed = history
+        .observations()
+        .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+    crate::infrastructure::operation_store::history::predecessors(
+        &history,
+        &observed,
+        Some(&ws.workspace_id),
+    )
+    .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+    let pending_operations = observed
+        .into_iter()
+        .filter(|record| !crate::domain::lifecycle_operation::terminal(&record.operation))
+        .collect::<Vec<_>>();
+    if !pending_operations.is_empty() {
+        errors.push("pending lifecycle operations block release preflight".into());
+    }
+    let all_plans_terminal = curation::validate_terminal_workspace(&ws).is_ok();
     if !all_plans_terminal {
         let unresolved: Vec<&str> = ws
             .plans
             .iter()
-            .filter(|p| !matches!(p.status, PlanStatus::Accepted | PlanStatus::Rejected))
+            .filter(|p| curation::validate_terminal_node(&ws, p).is_err())
             .map(|p| p.id.as_str())
             .collect();
         errors.push(format!(
@@ -128,11 +201,14 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
         ));
     }
 
-    // 3. Rejections must have compensation (compensating_plan set).
+    // A declared but incomplete/withdrawn compensation is not a release seal.
     let rejections_without_compensation: Vec<String> = ws
         .plans
         .iter()
-        .filter(|p| matches!(p.status, PlanStatus::Rejected) && p.compensating_plan.is_empty())
+        .filter(|p| {
+            matches!(p.status, PlanStatus::Rejected)
+                && curation::validate_terminal_node(&ws, p).is_err()
+        })
         .map(|p| p.id.clone())
         .collect();
     if !rejections_without_compensation.is_empty() {
@@ -143,20 +219,62 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
     }
 
     // 4. Design validates.
-    let design_valid = validate_design(repo_root);
+    let (design_valid, design_paths) = match validate_design(repo_root, config) {
+        Ok(paths) => (true, paths),
+        Err(error) => {
+            errors.push(format!("Design/ADR readiness failed: {error}"));
+            (false, vec![])
+        }
+    };
+    // Clean status can hide ignored/skip-worktree governance bytes. Prove raw
+    // observations against the actual committed source using built-in storage
+    // conversions, never treat status as a commit/content identity.
+    let committed = (|| -> MineResult<()> {
+        use crate::domain::graph::{CommitId, FileIdentity, RepoPath};
+        let mut paths = design_paths;
+        for value in [
+            ".mine/config.toml",
+            &config.graph.source,
+            &config.graph.rendered,
+        ] {
+            paths.push(
+                RepoPath::new(value)
+                    .map_err(|error| super::native_evidence::refused(error.to_string()))?,
+            );
+        }
+        paths.sort();
+        paths.dedup();
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let body = super::native_evidence::bytes(repo_root, &path)?;
+                Ok(FileIdentity {
+                    path,
+                    bytes: body.len() as u64,
+                    sha256: crate::infrastructure::graph_checkpoint::digest(&body),
+                })
+            })
+            .collect::<MineResult<Vec<_>>>()?;
+        let head = CommitId::new(dev_commit.clone())
+            .map_err(|error| super::native_evidence::refused(error.to_string()))?;
+        super::native_evidence::committed_files(repo_root, &head, &files)
+    })();
+    if let Err(error) = committed {
+        errors.push(format!("committed source governance proof failed: {error}"));
+    }
 
     // 5. Graph renders consistently (TOML matches MD). Read-only byte
     //    parity against a fresh deterministic render: preflight never
     //    rewrites the view (`mine graph render` is the repair).
-    let graph_valid = match store.load() {
-        Ok(ws) => match crate::infrastructure::toml_store::render_markdown(&ws) {
-            Ok(expected) => std::fs::read(store.md_path())
-                .map(|bytes| bytes == expected.as_bytes())
-                .unwrap_or(false),
-            Err(_) => false,
-        },
+    let graph_valid = match crate::infrastructure::toml_store::render_markdown(&ws) {
+        Ok(expected) => std::fs::read(store.md_path())
+            .map(|bytes| bytes == expected.as_bytes())
+            .unwrap_or(false),
         Err(_) => false,
     };
+    if !graph_valid {
+        errors.push("graph generated view differs from source".into());
+    }
 
     // 6. Distribution parity is NOT a generic release gate. Per the accepted
     //    Design (docs/design/integrations/distribution.md -> "Repository
@@ -171,17 +289,18 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
 
     // 7. No plan artifacts or design backups on the stable branch.
     let no_plan_artifacts_on_stable =
-        !path_exists_on_branch(repo_root, stable_branch, "docs/plan/");
+        !path_exists_on_branch(repo_root, stable_branch, &format!("{}/", config.plan.root));
     let no_design_backups_on_stable = !branch_has_design_backups(repo_root, stable_branch)?;
 
     // 8. No pending agent transactions (incomplete installs).
-    let pending_agent_transactions = check_pending_transactions(repo_root);
+    let pending_agent_transactions = check_pending_transactions(repo_root)?;
 
     // 9. Version resolution from the target repository's config.
-    let release_version = resolve_release_version(repo_root);
+    let release_version = config.mine_code_version.clone();
 
     let can_release = errors.is_empty()
         && all_plans_terminal
+        && stable_unchanged
         && design_valid
         && graph_valid
         // Distribution parity is deliberately NOT part of can_release:
@@ -191,6 +310,7 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
         && no_plan_artifacts_on_stable
         && no_design_backups_on_stable
         && pending_agent_transactions.is_empty()
+        && pending_operations.is_empty()
         && rejections_without_compensation.is_empty();
 
     Ok(ReleasePreflight {
@@ -207,6 +327,7 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
         no_plan_artifacts_on_stable,
         no_design_backups_on_stable,
         pending_agent_transactions,
+        pending_operations,
         rejections_without_compensation,
         errors,
     })
@@ -215,7 +336,23 @@ pub fn preflight(repo_root: &Path) -> MineResult<ReleasePreflight> {
 /// Previews what cleanup WOULD remove. No mutation.
 pub fn preview_cleanup(repo_root: &Path) -> MineResult<CleanupPreview> {
     let mut plan_workspace_files = Vec::new();
-    let plan_dir = repo_root.join("docs/plan");
+    let config_path = repo_root.join(".mine/config.toml");
+    let config = if config_path.try_exists()? {
+        Some(MineConfig::parse(
+            &config_path,
+            &std::fs::read_to_string(&config_path)?,
+        )?)
+    } else {
+        None
+    };
+    let plan_dir = if let Some(config) = &config {
+        crate::infrastructure::graph_snapshot::resolve_contained(
+            repo_root,
+            config.layout()?.plan_dir(),
+        )?
+    } else {
+        repo_root.join(crate::domain::config::GovernanceLayout::PLAN_DIR)
+    };
     if plan_dir.exists() {
         for entry in walk_files(&plan_dir) {
             let rel = entry
@@ -228,6 +365,26 @@ pub fn preview_cleanup(repo_root: &Path) -> MineResult<CleanupPreview> {
     }
 
     let mut design_backups = Vec::new();
+    let backup_root = crate::infrastructure::graph_snapshot::resolve_contained(
+        repo_root,
+        &crate::domain::graph::RepoPath::new(crate::domain::config::GovernanceLayout::BACKUP_DIR)
+            .expect("constant path"),
+    )?;
+    if backup_root.is_dir() {
+        for entry in std::fs::read_dir(&backup_root)? {
+            let entry = entry?;
+            design_backups.push(
+                entry
+                    .path()
+                    .strip_prefix(repo_root.canonicalize()?)
+                    .map_err(|_| MineError::GraphInvalid {
+                        detail: "backup preview escapes Root".into(),
+                    })?
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
     // Scan docs/ recursively for design-backup-* directories (not just
     // top-level entries, since backups live under docs/). The rejected Plan
     // 08 scanned repo_root's top-level entries, which only returns "docs"
@@ -277,25 +434,57 @@ pub fn preview_cleanup(repo_root: &Path) -> MineResult<CleanupPreview> {
     })
 }
 
-/// Resolves the release version from the current managed version and accepted
-/// changes. The first release defaults to `0.1.0` (the current managed version)
-/// when no prior release has been made; subsequent releases increment the
-/// patch component.
-fn resolve_release_version(repo_root: &Path) -> String {
-    // The managed version from <repo_root>/.mine/config.toml is the
-    // authoritative source. The release version is the current config
-    // mine_code_version, set via `mine repository version set --version
-    // <semver>` before release closure. Always read from the resolved
-    // repo_root, never from std::env::current_dir().
-    crate::cli::context::load_config(repo_root)
-        .map(|c| c.mine_code_version)
-        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
-}
-
-fn validate_design(repo_root: &Path) -> bool {
-    let marker = repo_root.join("docs/design/.mine-design.toml");
-    let index = repo_root.join("docs/design/index.md");
-    marker.exists() && index.exists()
+fn validate_design(
+    repo_root: &Path,
+    config: &crate::domain::config::MineConfig,
+) -> MineResult<Vec<crate::domain::graph::RepoPath>> {
+    use crate::domain::{design_marker::DesignMarker, graph::RepoPath};
+    let path = |value: &str| {
+        RepoPath::new(value).map_err(|error| super::native_evidence::refused(error.to_string()))
+    };
+    let marker_path = path(&config.design.marker)?;
+    let marker_bytes = super::native_evidence::bytes(repo_root, &marker_path)?;
+    let marker = DesignMarker::parse(
+        Path::new(marker_path.as_str()),
+        std::str::from_utf8(&marker_bytes)
+            .map_err(|_| super::native_evidence::refused("Design marker encoding"))?,
+    )?;
+    if marker.schema_version != DesignMarker::SCHEMA_VERSION
+        || marker.managed_by != DesignMarker::MANAGED_BY
+        || marker.repository_id != config.repository_id
+    {
+        return Err(super::native_evidence::refused(
+            "Design ownership marker does not match configuration",
+        ));
+    }
+    super::native_evidence::bytes(repo_root, &path(&config.design.root)?)?;
+    for relative in [&config.adr.registry, &config.adr.rendered_index] {
+        super::native_evidence::bytes(repo_root, &path(relative)?)?;
+    }
+    let registry = super::adr_service::AdrService::new(repo_root, config).validate()?;
+    if !registry.readiness_blockers(None).is_empty() {
+        return Err(super::native_evidence::refused(
+            "repository-wide ADR readiness is blocked",
+        ));
+    }
+    let mut paths = [
+        &config.design.marker,
+        &config.design.root,
+        &config.adr.registry,
+        &config.adr.rendered_index,
+    ]
+    .into_iter()
+    .map(|value| path(value))
+    .collect::<MineResult<Vec<_>>>()?;
+    for entry in registry.entries {
+        if matches!(
+            entry.status,
+            crate::domain::adr::AdrStatus::PROPOSED | crate::domain::adr::AdrStatus::APPROVED
+        ) {
+            paths.push(path(&entry.path)?);
+        }
+    }
+    Ok(paths)
 }
 
 fn check_distribution_sync(repo_root: &Path) -> bool {
@@ -336,18 +525,17 @@ fn relative_file_bytes(root: &Path) -> Option<std::collections::BTreeMap<String,
         .collect()
 }
 
-fn check_pending_transactions(repo_root: &Path) -> Vec<String> {
+fn check_pending_transactions(repo_root: &Path) -> MineResult<Vec<String>> {
     let mine_dir = repo_root.join(".mine");
     let mut pending = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&mine_dir) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with("agent-pending-") {
-                pending.push(name);
-            }
+    for entry in std::fs::read_dir(&mine_dir)? {
+        let name = entry?.file_name().to_string_lossy().to_string();
+        if name.starts_with("agent-pending-") {
+            pending.push(name);
         }
     }
-    pending
+    pending.sort();
+    Ok(pending)
 }
 
 fn path_exists_on_branch(repo_root: &Path, branch: &str, path: &str) -> bool {
@@ -366,44 +554,19 @@ pub fn branch_has_design_backups(repo_root: &Path, branch: &str) -> MineResult<b
     // The non-recursive variant only returns top-level tree entries (`docs`),
     // which can never match the `docs/design-backup-` prefix -- the root cause
     // detects nested docs/design-backup-* paths at arbitrary depth.
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["ls-tree", "-r", "--name-only", branch])
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git ls-tree failed: {e}"))))?;
+    let output = crate::infrastructure::git_evidence::GitRequest::new(repo_root)
+        .run_raw(&["ls-tree", "-r", "-z", "--name-only", branch], b"")?;
     if !output.status.success() {
         // Fail closed: if tree inspection fails, we cannot prove no backups
         // are present. Return true (backups suspected) so the gate blocks.
         return Ok(true);
     }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .any(|line| line.starts_with("docs/design-backup-")))
-}
-
-fn stable_commit_exists_and_matches_expected(
-    _repo_root: &Path,
-    stable_commit: &str,
-) -> MineResult<bool> {
-    // Verify the stable branch hasn't moved unexpectedly (we don't have a
-    // stored expected; this is a structural check that the stable branch
-    // exists and has a commit).
-    Ok(!stable_commit.is_empty())
-}
-
-fn run_git_rev_parse(repo_root: &Path, ref_name: &str) -> MineResult<String> {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["rev-parse", ref_name])
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git rev-parse failed: {e}"))))?;
-    if !output.status.success() {
-        return Ok(String::new());
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Ok(output.stdout.split(|byte| *byte == 0).any(|path| {
+        path.starts_with(b".mine/runtime/design-backups/")
+            || path
+                .split(|byte| *byte == b'/')
+                .any(|part| part.starts_with(b"design-backup-"))
+    }))
 }
 
 fn list_mine_branches(repo_root: &Path) -> Vec<String> {
@@ -488,14 +651,16 @@ mod tests {
     #[test]
     fn cleanup_preview_lists_plan_files() {
         let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".mine/plan")).unwrap();
+        std::fs::write(tmp.path().join(".mine/plan/active.md"), "plan").unwrap();
         std::fs::create_dir_all(tmp.path().join("docs/plan")).unwrap();
-        std::fs::write(tmp.path().join("docs/plan/01.md"), "plan").unwrap();
+        let foreign = tmp.path().join("docs/plan/user.md");
+        std::fs::write(&foreign, "user-owned document").unwrap();
         let preview = preview_cleanup(tmp.path()).unwrap();
-        assert!(
-            preview
-                .plan_workspace_files
-                .iter()
-                .any(|f| f.contains("01.md"))
+        assert_eq!(preview.plan_workspace_files, [".mine/plan/active.md"]);
+        assert_eq!(
+            std::fs::read_to_string(foreign).unwrap(),
+            "user-owned document"
         );
     }
 
@@ -547,54 +712,5 @@ mod tests {
         // include `distribution_synced` (see preflight), and the CLI-level
         // test `external_repo_with_unrelated_skills_is_not_blocked` proves it
         // end to end.
-    }
-
-    #[test]
-    fn resolve_release_version_reads_target_repo_config() {
-        // Repo A has version 1.2.3; the function must read it from repo A's
-        // config even though the process CWD is elsewhere.
-        let repo_a = tempfile::tempdir().unwrap();
-        let mine_dir = repo_a.path().join(".mine");
-        std::fs::create_dir_all(&mine_dir).unwrap();
-        std::fs::write(
-            mine_dir.join("config.toml"),
-            r#"schema_version = 1
-repository_id = "repo-a"
-mine_code_version = "1.2.3"
-
-[branches]
-stable = "main"
-integration = "dev"
-
-[design]
-root = "docs/design"
-marker = "docs/design/.mine-design.toml"
-language = "en"
-index_soft_limit_lines = 250
-leaf_soft_limit_lines = 400
-
-[plan]
-root = "docs/plan"
-ephemeral = true
-purge_before_stable_release = true
-
-[graph]
-source = "docs/plan/execution-graph.toml"
-rendered = "docs/plan/execution-graph.md"
-lock_timeout_ms = 5000
-"#,
-        )
-        .unwrap();
-
-        // Force CWD away from repo_a (to a different dir).
-        let elsewhere = tempfile::tempdir().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(elsewhere.path()).unwrap();
-        let version = resolve_release_version(repo_a.path());
-        std::env::set_current_dir(&prev).unwrap();
-        assert_eq!(
-            version, "1.2.3",
-            "release version must come from the target repo, not the process CWD"
-        );
     }
 }

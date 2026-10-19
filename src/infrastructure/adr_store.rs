@@ -3,11 +3,14 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use super::graph_snapshot::resolve_contained;
 use crate::domain::adr::{
     AdrEntry, AdrRegistry, AdrStatus, historical_bootstrap_digest, sha256_hex,
 };
 use crate::domain::config::AdrConfig;
 use crate::domain::error::{MineError, MineResult};
+use crate::domain::graph::RepoPath;
+use crate::domain::path::is_within;
 
 use super::{atomic_write, file_lock};
 
@@ -22,6 +25,61 @@ pub struct AdrStore {
 }
 
 impl AdrStore {
+    fn decisions_relative(&self) -> MineResult<String> {
+        let relative = |path: &Path| -> MineResult<RepoPath> {
+            let relative = path
+                .strip_prefix(&self.repo_root)
+                .map_err(|_| self.invalid("ADR path escapes Root"))?;
+            RepoPath::new(relative.to_string_lossy().replace('\\', "/"))
+                .map_err(|_| self.invalid("unsafe configured ADR path"))
+        };
+        let registry = relative(&self.registry_path)?;
+        let index = relative(&self.index_path)?;
+        let parent = registry
+            .as_str()
+            .rsplit_once('/')
+            .ok_or_else(|| self.invalid("ADR registry has no owned directory"))?
+            .0;
+        if index.as_str().rsplit_once('/').map(|pair| pair.0) != Some(parent) || registry == index {
+            return Err(self.invalid("ADR registry/index ownership differs"));
+        }
+        resolve_contained(&self.repo_root, &registry)?;
+        resolve_contained(&self.repo_root, &index)?;
+        resolve_contained(
+            &self.repo_root,
+            &RepoPath::new(".mine/locks/adr-registry.lock").expect("constant path"),
+        )?;
+        Ok(parent.into())
+    }
+
+    fn invalid(&self, detail: &str) -> MineError {
+        MineError::AdrRegistryInvalid {
+            path: self.registry_path.clone(),
+            detail: detail.into(),
+        }
+    }
+
+    fn validate_registry(&self, registry: &AdrRegistry) -> MineResult<()> {
+        let decisions = self.decisions_relative()?;
+        registry.validate_structure()?;
+        for entry in &registry.entries {
+            if !is_within(&decisions, &entry.path) || entry.path == decisions {
+                return Err(self.invalid(&format!(
+                    "{} body is outside the configured decisions directory",
+                    entry.id
+                )));
+            }
+            let path = RepoPath::new(entry.path.clone())
+                .map_err(|_| self.invalid("invalid ADR body path"))?;
+            resolve_contained(&self.repo_root, &path)?;
+        }
+        Ok(())
+    }
+
+    pub fn render_index(&self, registry: &AdrRegistry) -> MineResult<String> {
+        render_index(registry, &self.decisions_relative()?)
+    }
+
     #[must_use]
     pub fn new(repo_root: &Path, config: &AdrConfig) -> Self {
         Self {
@@ -45,6 +103,7 @@ impl AdrStore {
 
     /// Loads and validates the registry and all digests.
     pub fn load(&self) -> MineResult<AdrRegistry> {
+        self.decisions_relative()?;
         if !self.registry_path.exists() {
             return Err(MineError::AdrRegistryInvalid {
                 path: self.registry_path.clone(),
@@ -57,7 +116,7 @@ impl AdrStore {
                 path: self.registry_path.clone(),
                 detail: format!("could not parse registry TOML: {e}"),
             })?;
-        registry.validate_structure()?;
+        self.validate_registry(&registry)?;
         for entry in &registry.entries {
             if matches!(entry.status, AdrStatus::PROPOSED | AdrStatus::APPROVED) {
                 entry.verify_digest(&self.repo_root)?;
@@ -71,6 +130,7 @@ impl AdrStore {
     /// on the first `mine adr add` (revision 0 -> 1); read paths keep
     /// failing through `load` until then.
     pub fn load_or_empty(&self) -> MineResult<AdrRegistry> {
+        self.decisions_relative()?;
         if self.registry_path.exists() {
             return self.load();
         }
@@ -83,6 +143,7 @@ impl AdrStore {
         expected_revision: u64,
         mutate: impl FnOnce(AdrRegistry) -> MineResult<AdrRegistry>,
     ) -> MineResult<AdrRegistry> {
+        self.decisions_relative()?;
         let _lock = file_lock::acquire_exclusive(&self.lock_path, self.lock_timeout)?;
         let current = self.load_or_empty()?;
         if current.revision != expected_revision {
@@ -92,7 +153,7 @@ impl AdrStore {
             });
         }
         let next = mutate(current)?;
-        next.validate_structure()?;
+        self.validate_registry(&next)?;
         for entry in &next.entries {
             if matches!(entry.status, AdrStatus::PROPOSED | AdrStatus::APPROVED) {
                 entry.verify_digest(&self.repo_root)?;
@@ -103,7 +164,7 @@ impl AdrStore {
             detail: format!("could not serialize registry: {e}"),
         })?;
         atomic_write::write(&self.registry_path, content.as_bytes())?;
-        let index = render_index(&next)?;
+        let index = self.render_index(&next)?;
         atomic_write::write(&self.index_path, index.as_bytes())?;
         Ok(next)
     }
@@ -111,6 +172,7 @@ impl AdrStore {
     /// Imports the nine existing ADR bodies exactly once when the registry is
     /// absent. Repeated calls are idempotent and never alter existing facts.
     pub fn bootstrap_if_absent(&self, now: &str) -> MineResult<AdrRegistry> {
+        let decisions = self.decisions_relative()?;
         if self.registry_path.exists() {
             return self.load();
         }
@@ -122,7 +184,7 @@ impl AdrStore {
         for number in 1..=9 {
             let id = format!("ADR-{number:04}");
             let filename_prefix = format!("{number:04}-");
-            let path = std::fs::read_dir(self.repo_root.join("docs/design/decisions"))?
+            let path = std::fs::read_dir(self.repo_root.join(&decisions))?
                 .filter_map(Result::ok)
                 .map(|e| e.path())
                 .find(|p| {
@@ -185,7 +247,7 @@ impl AdrStore {
             });
         }
         registry.revision = 1;
-        registry.validate_structure()?;
+        self.validate_registry(&registry)?;
         for entry in &registry.entries {
             entry.verify_digest(&self.repo_root)?;
         }
@@ -198,14 +260,14 @@ impl AdrStore {
                 })?
                 .as_bytes(),
         )?;
-        let index = render_index(&registry)?;
+        let index = self.render_index(&registry)?;
         atomic_write::write(&self.index_path, index.as_bytes())?;
         Ok(registry)
     }
 }
 
 /// Deterministic generated decision index.
-pub fn render_index(registry: &AdrRegistry) -> MineResult<String> {
+pub fn render_index(registry: &AdrRegistry, decisions_dir: &str) -> MineResult<String> {
     let mut out = String::from("# Architecture Decision Records\n\n");
     out.push_str("> GENERATED VIEW. The registry is the machine fact source.\n\n");
     for entry in &registry.entries {
@@ -215,7 +277,7 @@ pub fn render_index(registry: &AdrRegistry) -> MineResult<String> {
             entry.title,
             entry
                 .path
-                .strip_prefix("docs/design/decisions/")
+                .strip_prefix(&format!("{decisions_dir}/"))
                 .unwrap_or(&entry.path),
             entry.status.as_str()
         ));

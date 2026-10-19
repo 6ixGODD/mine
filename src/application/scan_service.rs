@@ -43,10 +43,8 @@ pub struct PlanRefScanResult {
 
 /// Returns `true` when the path is excluded from the scan (temporary planning
 /// state and accepted documentation).
-fn is_excluded(rel: &str) -> bool {
-    if rel.starts_with("docs/plan/")
-        || rel.starts_with("docs/design/")
-        || rel.starts_with("docs/design-backup-")
+fn is_excluded(rel: &str, owned_roots: &[String]) -> bool {
+    if owned_roots.iter().any(|root| crate::domain::path::is_within(root, rel))
         // User-facing documentation: concepts and user guides explain the
         // Plan mechanism itself and legitimately use `Plan NN` as teaching
         // examples; they are not implementation provenance.
@@ -120,6 +118,24 @@ fn previous_line(content: &str, line_number: u32) -> String {
 ///   repository (fail-closed: the gate cannot prove absence of references).
 /// - [`MineError::Io`] for filesystem or Git failures.
 pub fn scan_plan_refs(repo_root: &Path, _check: bool) -> MineResult<PlanRefScanResult> {
+    let config_path = repo_root.join(".mine/config.toml");
+    let mut owned_roots = vec![crate::domain::config::GovernanceLayout::BACKUP_DIR.to_string()];
+    if config_path.try_exists()? {
+        let config = crate::domain::config::MineConfig::parse(
+            &config_path,
+            &std::fs::read_to_string(&config_path)?,
+        )?;
+        let layout = config.layout()?;
+        owned_roots.extend([
+            layout.design_dir().as_str().to_string(),
+            layout.plan_dir().as_str().to_string(),
+        ]);
+    } else {
+        owned_roots.extend([
+            crate::domain::config::GovernanceLayout::DESIGN_DIR.to_string(),
+            crate::domain::config::GovernanceLayout::PLAN_DIR.to_string(),
+        ]);
+    }
     // Fail closed: if Git cannot enumerate tracked files, we cannot prove the
     // tree is clean.
     let files = git::list_tracked_files(repo_root)?;
@@ -138,7 +154,7 @@ pub fn scan_plan_refs(repo_root: &Path, _check: bool) -> MineResult<PlanRefScanR
     let mut files_scanned = 0usize;
 
     for rel in files {
-        if is_excluded(&rel) {
+        if is_excluded(&rel, &owned_roots) {
             continue;
         }
         // A file literally named scan-plan-refs.sh is skipped so the script

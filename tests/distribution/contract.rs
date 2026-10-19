@@ -77,44 +77,50 @@ fn every_skill_references_only_accepted_mcp_tools() {
 }
 
 #[test]
-fn planning_skills_are_mcp_first_with_cli_fallback() {
-    for s in ["mine-plan-create", "mine-plan-exec", "mine-plan-review"] {
-        let body = skill_body(s);
+fn planning_skills_reference_native_mcp_entries_not_an_unpublished_surface() {
+    for skill in ["mine-plan-create", "mine-plan-exec", "mine-plan-review"] {
+        let body = skill_body(skill);
         assert!(
             !mcp_tool_refs(&body).is_empty(),
-            "{s} must reference accepted MCP tools (MCP-first)"
+            "{skill} omitted all typed MCP entries"
         );
-        assert!(
-            body.contains("CLI fallback"),
-            "{s} must document the CLI fallback explicitly"
-        );
-        assert!(
-            body.contains("mine plan ") || body.contains("mine graph "),
-            "{s} must reference the `mine` CLI as fallback"
-        );
+        for name in mcp_tool_refs(&body) {
+            assert!(ACCEPTED_MCP_TOOLS.contains(&name), "{skill}: {name}");
+        }
     }
 }
 
 #[test]
-fn execution_and_review_skills_define_graph_backed_plan_resolution() {
-    for skill in ["mine-plan-exec", "mine-plan-review"] {
-        let body = skill_body(skill);
-        for required in [
-            "mine graph show --format json",
-            "planNN",
-            "PNN",
-            "planNN-CNN",
-            "PNN-CNN",
-            "legacy bootstrap",
-            "exact stored ID",
-            "exact registered path",
-            "exactly one distinct graph",
-            "prefix/substring",
-            "NN-C",
-        ] {
+fn every_bundled_markdown_reference_resolves_inside_its_actual_skill() {
+    for relative in rel_files(&skills_root()) {
+        if !relative.ends_with(".md") {
+            continue;
+        }
+        let source = skills_root().join(&relative);
+        let skill = skills_root()
+            .join(relative.split('/').next().unwrap())
+            .canonicalize()
+            .unwrap();
+        let body = read_str(&source);
+        for tail in body.split("](").skip(1) {
+            let target = tail.split(')').next().unwrap();
+            if target.contains("://") || target.starts_with('#') {
+                continue;
+            }
+            let file = target.split('#').next().unwrap();
+            let resolved = source
+                .parent()
+                .unwrap()
+                .join(file)
+                .canonicalize()
+                .unwrap_or_else(|error| panic!("{relative}: broken reference {target}: {error}"));
             assert!(
-                body.contains(required),
-                "{skill} must document graph-backed invocation contract fragment {required:?}"
+                resolved.starts_with(&skill),
+                "{relative} unexpectedly depends on another installed skill: {target}"
+            );
+            assert!(
+                resolved.is_file(),
+                "{relative} reference is not a file: {target}"
             );
         }
     }
@@ -187,41 +193,80 @@ fn graph_backed_plan_resolution_refuses_ambiguity() {
 }
 
 #[test]
-fn skills_govern_anchor_start_and_active_rejection() {
-    let arch = skill_body("mine-arch");
-    assert!(arch.contains("objectively infeasible `IN_PROGRESS` Plan"));
-    assert!(arch.contains("canonical Root-visible review report"));
-
-    let create = skill_body("mine-plan-create");
-    assert!(create.contains("stored-anchor schema recovery"));
-    assert!(create.contains("next contiguous sibling compensation"));
-
-    let exec = skill_body("mine-plan-exec");
-    assert!(exec.contains("mine plan prepare --id <exact-stored-id>"));
-    assert!(exec.contains("persisted `branch_anchor` equals the prepared worktree HEAD"));
-    assert!(exec.contains("keep the graph `IN_PROGRESS`"));
-
-    let review = skill_body("mine-plan-review");
-    assert!(review.contains("Review an infeasible active Plan"));
-    assert!(review.contains("--review-report <review report path>"));
-    assert!(review.contains("merge the Plan branch into Root `dev` with `--no-ff`"));
+fn review_begin_uses_strict_typed_identity_not_unchecked_caller_assertions() {
+    use mine::application::native_lifecycle::BeginInput;
+    let id = format!("plan{:02}", 63);
+    let mut request = serde_json::json!({
+        "schema_version":1,"actor":"independent-fixture-reviewer",
+        "intent":{"kind":"acceptance","plan_id":id,
+        "review":{"reviewed_tip":"1".repeat(40),
+        "report":{"path":format!(".mine/plan/reports/{id}-fixture-review.md"),"bytes":12,"sha256":"a".repeat(64)}}}
+    });
+    assert!(serde_json::from_value::<BeginInput>(request.clone()).is_ok());
+    request["writer_stopped"] = true.into();
+    assert!(
+        serde_json::from_value::<BeginInput>(request.clone()).is_err(),
+        "unchecked stopped-writer input must not bypass the pinned report"
+    );
+    request.as_object_mut().unwrap().remove("writer_stopped");
+    request["intent"]["review"]["report"]["sha256"] = "changed-or-uppercase".into();
+    assert!(serde_json::from_value::<BeginInput>(request).is_err());
 }
 
 #[test]
-fn skills_document_cli_only_operations_without_mcp() {
-    // Skills must state which operations are CLI-only (no MCP tool).
-    // mine-plan-create must document that `release` is CLI-only.
-    let create = skill_body("mine-plan-create");
-    assert!(
-        create.contains("no MCP tool for release") || create.contains("CLI-only"),
-        "mine-plan-create must document release as a CLI-only fallback"
-    );
-    // mine-plan-review must document that rewire-compensation is CLI-only.
-    let review = skill_body("mine-plan-review");
-    assert!(
-        review.contains("no MCP tool for rewiring") || review.contains("rewire-compensation"),
-        "mine-plan-review must document rewire-compensation as CLI-only"
-    );
+fn native_cli_only_workflows_parse_without_inventing_mcp_adapters() {
+    use clap::Parser;
+    use mine::cli::args::Cli;
+    let id = format!("plan{:02}", 63);
+    let uuid = uuid::Uuid::new_v4().to_string();
+    for arguments in [
+        vec![
+            "mine",
+            "plan",
+            "release",
+            "--actor",
+            "reviewer",
+            "--expected-revision",
+            "7",
+            "--id",
+            &id,
+        ],
+        vec![
+            "mine",
+            "plan",
+            "rewire-compensation",
+            "--actor",
+            "reviewer",
+            "--expected-revision",
+            "7",
+            "--id",
+            &id,
+        ],
+        vec!["mine", "operation", "show", "--operation-id", &uuid],
+        vec![
+            "mine",
+            "operation",
+            "stage",
+            "--expected-revision",
+            "7",
+            "--input",
+            ".mine/runtime/stage.json",
+        ],
+        vec![
+            "mine",
+            "verification",
+            "check",
+            "--receipt",
+            "receipt.json",
+            "--input",
+            ".mine/build/request/check.json",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(arguments.clone()).is_ok(),
+            "{arguments:?}"
+        );
+    }
 }
 
 #[test]
@@ -327,20 +372,4 @@ fn plan_mutable_outputs_are_disjoint_and_stale_sentinels_are_not_observed() {
         !compensation.join("debug/stale-sentinel").exists(),
         "a compensation Plan must not observe base-Plan mutable output"
     );
-
-    for skill in FIVE_SKILLS {
-        let body = skill_body(skill);
-        assert!(
-            body.contains("<Root>/.mine/build/<plan-id>/<tool-or-output-class>/"),
-            "{skill} must document exact Plan output ownership"
-        );
-        assert!(
-            body.contains("CARGO_TARGET_DIR"),
-            "{skill} must document the Rust output adapter"
-        );
-        assert!(
-            body.contains("very large") || body.contains("exceptionally large"),
-            "{skill} must document the measured-capacity exception"
-        );
-    }
 }

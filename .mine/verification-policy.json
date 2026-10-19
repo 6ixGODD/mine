@@ -1,0 +1,378 @@
+{
+  "schema_version": 1,
+  "design_references": [
+    ".mine/design/operations/verification-receipts.md"
+  ],
+  "checks": [
+    {
+      "name": "format",
+      "command": {
+        "argv": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--",
+          "--check"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "cargo",
+        "rustfmt"
+      ],
+      "dependency_locks": [
+        "Cargo.lock"
+      ],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "lint",
+      "command": {
+        "argv": [
+          "cargo",
+          "clippy",
+          "--all-targets",
+          "--all-features",
+          "--",
+          "-D",
+          "warnings",
+          "-W",
+          "unsafe-code"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "cargo",
+        "clippy",
+        "rustc"
+      ],
+      "dependency_locks": [
+        "Cargo.lock"
+      ],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [
+        "all"
+      ],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "build",
+      "command": {
+        "argv": [
+          "cargo",
+          "build",
+          "--all-targets",
+          "--all-features"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "cargo",
+        "rustc"
+      ],
+      "dependency_locks": [
+        "Cargo.lock"
+      ],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [
+        "all"
+      ],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "test",
+      "command": {
+        "argv": [
+          "cargo",
+          "test",
+          "--all-targets",
+          "--all-features"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "cargo",
+        "rustc"
+      ],
+      "dependency_locks": [
+        "Cargo.lock"
+      ],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [
+        "all"
+      ],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "docs",
+      "command": {
+        "argv": [
+          "cargo",
+          "doc",
+          "--no-deps",
+          "--all-features"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "cargo",
+        "rustdoc"
+      ],
+      "dependency_locks": [
+        "Cargo.lock"
+      ],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [
+        "all"
+      ],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "plugin-sync",
+      "command": {
+        "argv": [
+          "python",
+          "scripts/sync-plugin-assets.py",
+          "--check"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "python"
+      ],
+      "dependency_locks": [],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    },
+    {
+      "name": "repository",
+      "command": {
+        "argv": [
+          "python",
+          "scripts/verify.py"
+        ],
+        "cwd": {
+          "kind": "root"
+        }
+      },
+      "inputs": {
+        "kind": "full"
+      },
+      "tools": [
+        "python"
+      ],
+      "dependency_locks": [],
+      "environment": [
+        {
+          "name": "HOME",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "NETWORK",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "EXTERNAL_DATA",
+          "secret_dependent": false,
+          "observable": false
+        },
+        {
+          "name": "RUSTDOCFLAGS",
+          "secret_dependent": false,
+          "observable": true
+        }
+      ],
+      "features": [],
+      "warnings_disqualify": true,
+      "independent_required": false,
+      "native_platform": null,
+      "retention_bytes": 1048576,
+      "retention_files": 8
+    }
+  ]
+}

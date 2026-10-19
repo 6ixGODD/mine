@@ -5,7 +5,7 @@
 
 use mine::cli;
 use mine::domain::adr::sha256_hex;
-use mine::domain::config::AdrConfig;
+use mine::domain::config::{AdrConfig, GovernanceLayout, MineConfig};
 use mine::infrastructure::adr_store::AdrStore;
 use std::path::{Path, PathBuf};
 
@@ -29,22 +29,49 @@ fn copy_tree(source: &Path, destination: &Path) {
 
 fn bootstrap_fixture() -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
+    // Locate source Design through its real configuration, so the same fixture
+    // works before and after terminal layout curation without probing aliases.
+    let path = repo_root().join(".mine/config.toml");
+    let mut config = MineConfig::parse(&path, &std::fs::read_to_string(&path).unwrap()).unwrap();
+    let source_layout = config.layout().unwrap();
+    let layout = GovernanceLayout::canonical();
     copy_tree(
-        &repo_root().join("docs/design"),
-        &temp.path().join("docs/design"),
+        &repo_root().join(source_layout.design_dir().as_str()),
+        &temp.path().join(layout.design_dir().as_str()),
     );
-    std::fs::create_dir_all(temp.path().join(".mine")).unwrap();
-    std::fs::copy(
-        repo_root().join(".mine/config.toml"),
-        temp.path().join(".mine/config.toml"),
-    )
-    .unwrap();
-    std::fs::remove_file(temp.path().join("docs/design/decisions/adr-registry.toml")).unwrap();
-    std::fs::remove_file(temp.path().join("docs/design/decisions/index.md")).unwrap();
+    config.design.root = layout.design_index().as_str().into();
+    config.design.marker = layout.design_marker().as_str().into();
+    config.plan.root = layout.plan_dir().as_str().into();
+    config.graph.source = layout.graph_source().as_str().into();
+    config.graph.rendered = layout.graph_view().as_str().into();
+    config.adr.registry = layout.adr_registry().as_str().into();
+    config.adr.rendered_index = layout.adr_index().as_str().into();
+    std::fs::write(temp.path().join(".mine/config.toml"), config.to_toml()).unwrap();
+    std::fs::remove_file(temp.path().join(".mine/design/decisions/adr-registry.toml")).unwrap();
+    std::fs::remove_file(temp.path().join(".mine/design/decisions/index.md")).unwrap();
     AdrStore::new(temp.path(), &AdrConfig::default())
         .bootstrap_if_absent("2026-08-21T00:00:00Z")
         .unwrap();
+    prepare_git_governance(temp.path());
     temp
+}
+
+fn prepare_git_governance(root: &Path) {
+    fixture_git(root, &["init", "-b", "master"]);
+    for (key, value) in [
+        ("user.name", "ADR Fixture"),
+        ("user.email", "fixture@example.invalid"),
+        ("commit.gpgSign", "false"),
+        ("core.autocrlf", "true"),
+    ] {
+        fixture_git(root, &["config", key, value]);
+    }
+    mine::infrastructure::governance_git::establish(root).unwrap();
+    fixture_git(root, &["add", "--", ".mine"]);
+    fixture_git(
+        root,
+        &["commit", "-m", "fixture: immutable governance Git baseline"],
+    );
 }
 
 fn run(repo: &Path, args: &[&str]) -> i32 {
@@ -73,7 +100,7 @@ fn run_json(repo: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// Registers and approves one extra ADR in the temp repository.
 fn approve_extra(repo: &Path, id: &str, scopes: &[&str]) {
-    let file = format!("docs/design/decisions/{}-preview.md", &id[4..]);
+    let file = format!(".mine/design/decisions/{}-preview.md", &id[4..]);
     std::fs::write(
         repo.join(&file),
         format!("# {id}: Preview Fixture\n\nBody for the supersede preview test.\n"),
@@ -186,13 +213,52 @@ fn forged_bootstrap_digest_fails_cli_validation_and_readiness() {
 /// graph, so plan registration/release gating can be exercised end to end.
 fn graphed_fixture() -> tempfile::TempDir {
     let temp = bootstrap_fixture();
-    let repo = temp.path().join("docs/plan");
+    let root = temp.path();
+    fixture_git(root, &["init", "-b", "master"]);
+    for (key, value) in [
+        ("user.name", "ADR Fixture"),
+        ("user.email", "fixture@example.invalid"),
+        ("commit.gpgSign", "false"),
+        ("core.autocrlf", "false"),
+    ] {
+        fixture_git(root, &["config", key, value]);
+    }
+    std::fs::write(root.join("README.md"), "# Private ADR gate fixture\n").unwrap();
+    std::fs::write(
+        root.join(".gitignore"),
+        "/.mine/runtime/\n/.mine/locks/\n/.mine/worktrees/\n/.mine/build/\n",
+    )
+    .unwrap();
+    fixture_git(root, &["add", "README.md", ".gitignore"]);
+    fixture_git(root, &["commit", "-m", "private Git baseline"]);
+    assert_eq!(run(root, &["init"]), 0);
+    fixture_commit(
+        root,
+        &[
+            ".mine/config.toml",
+            ".mine/.gitignore",
+            ".mine/.gitattributes",
+            "AGENTS.md",
+            ".mine/design",
+        ],
+    );
+    let baseline = fixture_git(root, &["rev-parse", "HEAD"]);
+    fixture_git(root, &["switch", "-c", "dev"]);
+    let repo = temp.path().join(".mine/plan");
     std::fs::create_dir_all(&repo).unwrap();
-    let real_graph: mine::domain::graph::PlanWorkspace =
-        toml::from_str(include_str!("fixtures/development-execution-graph.toml"))
-            .expect("development graph fixture parses");
-    let mut ws = real_graph;
-    ws.plans = vec![];
+    let ws = mine::domain::graph::PlanWorkspace {
+        schema_version: 4,
+        revision: 72,
+        project_id: "adr-gate-fixture".into(),
+        workspace_id: uuid::Uuid::new_v4().to_string(),
+        stable_branch: "master".into(),
+        integration_branch: "dev".into(),
+        stable_baseline_commit: baseline,
+        design_root: ".mine/design/index.md".into(),
+        ephemeral_workspace: true,
+        purge_before_stable_release: true,
+        plans: vec![],
+    };
     std::fs::write(
         repo.join("execution-graph.toml"),
         toml::to_string(&ws).unwrap(),
@@ -201,12 +267,37 @@ fn graphed_fixture() -> tempfile::TempDir {
     mine::infrastructure::toml_store::TomlStore::new(temp.path())
         .render()
         .unwrap();
+    fixture_commit(root, &[".mine/plan"]);
     temp
+}
+
+fn fixture_git(root: &Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+fn fixture_commit(root: &Path, paths: &[&str]) {
+    let mut args = vec!["add", "--"];
+    args.extend_from_slice(paths);
+    fixture_git(root, &args);
+    fixture_git(
+        root,
+        &["commit", "-m", "explicit fixture governance inputs"],
+    );
 }
 
 /// Registers a blocking ADR in the given state and scope, creating its body.
 fn scoped_adr(repo: &Path, id: &str, scope: &str, approve: bool) {
-    let file = format!("docs/design/decisions/{}-scope.md", &id[4..]);
+    let file = format!(".mine/design/decisions/{}-scope.md", &id[4..]);
     std::fs::write(
         repo.join(&file),
         format!(
@@ -244,22 +335,29 @@ Decision body.
 fn scoped_adr_gates_plan_registration_by_scope() {
     let temp = graphed_fixture();
     let repo = temp.path();
-    // A DRAFT blocking ADR scoped under the design root applies to the
+    // An unapproved blocking ADR scoped under the design root applies to the
     // default registration scope and must block it.
-    scoped_adr(repo, "ADR-0010", "docs/design/execution-graph", false);
+    scoped_adr(repo, "ADR-0010", ".mine/design/execution-graph", false);
+    fixture_commit(repo, &[".mine/design/decisions"]);
     let base_add = [
         "plan",
         "add",
+        "--actor",
+        "fixture-planner",
+        "--expected-revision",
+        "72",
+        "--write",
+        "tests/adr-fixture/",
         "--id",
         // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
         "plan02",
         "--path",
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        "docs/plan/plan02-fixture.md",
+        ".mine/plan/plan02-fixture.md",
         "--title",
         "fixture",
         "--design-ref",
-        "docs/design/index.md",
+        ".mine/design/index.md",
     ];
     let (code, _out, err) = run_json(repo, &base_add);
     assert_ne!(code, 0, "default-scope registration must be gated");
@@ -272,17 +370,23 @@ fn scoped_adr_gates_plan_registration_by_scope() {
     // scope verbatim.
     std::fs::write(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        repo.join("docs/plan/plan02-fixture.md"),
+        repo.join(".mine/plan/plan02-fixture.md"),
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
         "# plan02
 ",
     )
     .unwrap();
+    // mine-release-allow-plan-reference: explicit private Plan body and scoped ADR inputs
+    fixture_commit(
+        repo,
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        &[".mine/design/decisions", ".mine/plan/plan02-fixture.md"],
+    );
     let mut scoped_add = base_add.to_vec();
     scoped_add.push("--planning-scope");
     scoped_add.push("docs/other-zone");
-    let (code, _out, _err) = run_json(repo, &scoped_add);
-    assert_eq!(code, 0, "out-of-scope registration proceeds");
+    let (code, _out, err) = run_json(repo, &scoped_add);
+    assert_eq!(code, 0, "out-of-scope registration proceeds: {err}");
     let (code, out, _err) = run_json(
         repo,
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
@@ -302,28 +406,36 @@ fn scoped_adr_added_after_registration_blocks_release_until_approved() {
     // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
     std::fs::write(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        repo.join("docs/plan/plan02-fixture.md"),
+        repo.join(".mine/plan/plan02-fixture.md"),
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
         "# plan02
 ",
     )
     .unwrap();
+    // mine-release-allow-plan-reference: registration captures actual committed Plan bytes
+    fixture_commit(repo, &[".mine/plan/plan02-fixture.md"]);
     assert_eq!(
         run(
             repo,
             &[
                 "plan",
                 "add",
+                "--actor",
+                "fixture-planner",
+                "--expected-revision",
+                "72",
+                "--write",
+                "tests/adr-fixture/",
                 "--id",
                 // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
                 "plan02",
                 "--path",
                 // mine-release-allow-plan-reference: plan-id lifecycle fixture
-                "docs/plan/plan02-fixture.md",
+                ".mine/plan/plan02-fixture.md",
                 "--title",
                 "fixture",
                 "--design-ref",
-                "docs/design/index.md",
+                ".mine/design/index.md",
             ],
         ),
         0,
@@ -332,17 +444,31 @@ fn scoped_adr_added_after_registration_blocks_release_until_approved() {
 
     // A PROPOSED blocking ADR in the default scope appears after registration
     // and must fail the release-time re-check, writing nothing.
-    scoped_adr(repo, "ADR-0010", "docs/design", false);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    scoped_adr(repo, "ADR-0010", ".mine/design", false);
+    fixture_commit(repo, &[".mine/design/decisions"]);
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    let (code, _out, err) = run_json(repo, &["plan", "release", "--id", "plan02"]);
+    let (code, _out, err) = run_json(
+        repo,
+        &[
+            "plan",
+            "release",
+            "--id",
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan02",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "73",
+        ],
+    );
     assert_ne!(code, 0, "release re-check must block");
     assert!(
         err.contains("planning readiness blocked") && err.contains("ADR-0010"),
         "blocker DTOs in the error: {err}"
     );
     assert_eq!(
-        std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap(),
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
         before,
         "nothing written"
     );
@@ -357,24 +483,38 @@ fn scoped_adr_added_after_registration_blocks_release_until_approved() {
         ),
         0
     );
+    fixture_commit(repo, &[".mine/design/decisions"]);
     let registry = AdrStore::new(repo, &AdrConfig::default()).load().unwrap();
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    let (code, out, _err) = run_json(repo, &["plan", "release", "--id", "plan02"]);
-    assert_eq!(code, 0, "release proceeds once ready: {out}");
+    let (code, out, err) = run_json(
+        repo,
+        &[
+            "plan",
+            "release",
+            "--id",
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan02",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "73",
+        ],
+    );
+    assert_eq!(code, 0, "release proceeds once ready: {out} {err}");
     assert!(
-        out.contains("\"planning_scope\":\"docs/design\""),
+        out.contains("\"planning_scope\":\".mine/design\""),
         "release envelope carries the scope: {out}"
     );
-    let graph_text = std::fs::read_to_string(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let graph_text = std::fs::read_to_string(repo.join(".mine/plan/execution-graph.toml")).unwrap();
     assert!(
-        graph_text.starts_with("schema_version = \"mine-graph-v4\""),
+        graph_text.starts_with("schema_version = \"mine-graph-v7\""),
         "mutation upgraded the wire schema"
     );
     let graph: mine::domain::graph::PlanWorkspace = toml::from_str(&graph_text).unwrap();
     // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
     let node = graph.get("plan02").unwrap();
     assert_eq!(node.status.as_str(), "READY");
-    assert_eq!(node.planning_scope, "docs/design");
+    assert_eq!(node.planning_scope, ".mine/design");
     assert!(!node.readiness_checked_at.is_empty());
     assert_eq!(node.adr_registry_revision, registry.revision);
 }
@@ -383,11 +523,11 @@ fn scoped_adr_added_after_registration_blocks_release_until_approved() {
 fn supersede_dry_run_previews_scopes_without_writing() {
     let temp = bootstrap_fixture();
     // One approved ADR per scope, so each preview affects exactly one scope.
-    approve_extra(temp.path(), "ADR-0010", &["docs/design/execution-graph"]);
-    approve_extra(temp.path(), "ADR-0012", &["docs/design/other-zone"]);
+    approve_extra(temp.path(), "ADR-0010", &[".mine/design/execution-graph"]);
+    approve_extra(temp.path(), "ADR-0012", &[".mine/design/other-zone"]);
     // A still-DRAFT scoped ADR keeps its scope blocked after the previewed
     // supersession, so the two previews report both outcomes.
-    let draft_file = "docs/design/decisions/0011-preview-draft.md";
+    let draft_file = ".mine/design/decisions/0011-preview-draft.md";
     std::fs::write(
         temp.path().join(draft_file),
         "# ADR-0011: Preview Fixture\n\nUnapproved decision.\n",
@@ -406,13 +546,13 @@ fn supersede_dry_run_previews_scopes_without_writing() {
                 "--title",
                 "ADR-0011",
                 "--scope",
-                "docs/design/other-zone"
+                ".mine/design/other-zone"
             ]
         ),
         0
     );
-    let registry_path = temp.path().join("docs/design/decisions/adr-registry.toml");
-    let index_path = temp.path().join("docs/design/decisions/index.md");
+    let registry_path = temp.path().join(".mine/design/decisions/adr-registry.toml");
+    let index_path = temp.path().join(".mine/design/decisions/index.md");
     let registry_before = std::fs::read(&registry_path).unwrap();
     let index_before = std::fs::read(&index_path).unwrap();
 
@@ -489,7 +629,7 @@ fn supersede_dry_run_previews_scopes_without_writing() {
 #[test]
 fn design_render_repairs_stale_index_and_validate_distinguishes() {
     let temp = bootstrap_fixture();
-    let index_path = temp.path().join("docs/design/decisions/index.md");
+    let index_path = temp.path().join(".mine/design/decisions/index.md");
     // Corrupt the generated index: validate must fail naming the repair.
     std::fs::write(&index_path, "# corrupted\n").unwrap();
     let (code, _out, err) = run_json(temp.path(), &["adr", "validate", "--format", "json"]);
@@ -528,18 +668,12 @@ fn design_render_repairs_stale_index_and_validate_distinguishes() {
 fn first_adr_add_bootstraps_registry_in_ordinary_repository() {
     let temp = tempfile::tempdir().unwrap();
     let repo = temp.path();
-    copy_tree(&repo_root().join("docs/design"), &repo.join("docs/design"));
-    std::fs::remove_file(repo.join("docs/design/decisions/adr-registry.toml")).unwrap();
-    std::fs::remove_file(repo.join("docs/design/decisions/index.md")).unwrap();
-    std::fs::create_dir_all(repo.join(".mine")).unwrap();
-    std::fs::copy(
-        repo_root().join(".mine/config.toml"),
-        repo.join(".mine/config.toml"),
-    )
-    .unwrap();
+    assert_eq!(run(repo, &["init"]), 0);
+    std::fs::create_dir_all(repo.join(".mine/design/decisions")).unwrap();
+    prepare_git_governance(repo);
     assert!(
         !repo
-            .join("docs/design/decisions/adr-registry.toml")
+            .join(".mine/design/decisions/adr-registry.toml")
             .exists()
     );
 
@@ -554,7 +688,7 @@ fn first_adr_add_bootstraps_registry_in_ordinary_repository() {
 
     // The first add bootstraps the empty registry and records the DRAFT.
     std::fs::write(
-        repo.join("docs/design/decisions/9001-ordinary-decision.md"),
+        repo.join(".mine/design/decisions/9001-ordinary-decision.md"),
         "# An ordinary decision\n\nBody for the first-add bootstrap test.\n",
     )
     .unwrap();
@@ -566,7 +700,7 @@ fn first_adr_add_bootstraps_registry_in_ordinary_repository() {
             "--id",
             "ADR-9001",
             "--path",
-            "docs/design/decisions/9001-ordinary-decision.md",
+            ".mine/design/decisions/9001-ordinary-decision.md",
             "--title",
             "Ordinary decision",
             "--planning-blocking",
@@ -577,7 +711,7 @@ fn first_adr_add_bootstraps_registry_in_ordinary_repository() {
     assert_eq!(code, 0, "{out}");
     assert!(out.contains("\"status\":\"DRAFT\""), "{out}");
     assert!(
-        repo.join("docs/design/decisions/adr-registry.toml")
+        repo.join(".mine/design/decisions/adr-registry.toml")
             .exists()
     );
 

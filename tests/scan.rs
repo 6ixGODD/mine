@@ -10,6 +10,9 @@
 use mine::cli;
 use std::path::Path;
 
+#[path = "support/config.rs"]
+mod fixture_config;
+
 fn run_scan(repo: &Path, check: bool) -> (i32, serde_json::Value) {
     let mut argv = vec![
         "mine".to_string(),
@@ -172,16 +175,16 @@ fn scan_flags_monorepo_tracked_layout() {
 fn scan_excludes_docs_and_plan_workspace() {
     let tmp = tempfile::tempdir().unwrap();
     init_repo(tmp.path());
-    std::fs::create_dir_all(tmp.path().join("docs/design")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".mine/design")).unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/arch.md"),
+        tmp.path().join(".mine/design/arch.md"),
         // mine-release-allow-plan-reference: scanner test fixture
         "# Plan 99 in design doc\n",
     )
     .unwrap();
-    std::fs::create_dir_all(tmp.path().join("docs/plan")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".mine/plan")).unwrap();
     std::fs::write(
-        tmp.path().join("docs/plan/01-x.md"),
+        tmp.path().join(".mine/plan/01-x.md"),
         // mine-release-allow-plan-reference: scanner test fixture
         "# Plan 99 in plan workspace\n",
     )
@@ -192,12 +195,53 @@ fn scan_excludes_docs_and_plan_workspace() {
     commit_all(tmp.path(), "docs only");
 
     let (exit, env) = run_scan(tmp.path(), true);
-    assert_eq!(exit, 0, "docs/plan/testdata must be excluded: {env}");
+    assert_eq!(
+        exit, 0,
+        "owned Design/Plan/testdata must be excluded: {env}"
+    );
     assert!(
         findings(&env).is_empty(),
         "no findings expected: {:?}",
         findings(&env)
     );
+}
+
+#[test]
+fn configured_roots_are_authoritative_without_permanent_path_aliases() {
+    for legacy in [false, true] {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let mut config = fixture_config::canonical();
+        if legacy {
+            config.design.root = "docs/design/index.md".into();
+            config.design.marker = "docs/design/.mine-design.toml".into();
+            config.plan.root = "docs/plan".into();
+            config.graph.source = "docs/plan/execution-graph.toml".into();
+            config.graph.rendered = "docs/plan/execution-graph.md".into();
+            config.adr.registry = "docs/design/decisions/adr-registry.toml".into();
+            config.adr.rendered_index = "docs/design/decisions/index.md".into();
+        }
+        config.layout().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".mine")).unwrap();
+        std::fs::write(tmp.path().join(".mine/config.toml"), config.to_toml()).unwrap();
+        for prefix in ["docs", ".mine"] {
+            let path = tmp.path().join(format!("{prefix}/design/reference.md"));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            // mine-release-allow-plan-reference: deliberate scanner input in two alternate roots
+            std::fs::write(path, "Plan 99\n").unwrap();
+        }
+        commit_all(tmp.path(), "explicit layout authority fixture");
+        let (exit, envelope) = run_scan(tmp.path(), true);
+        assert_ne!(exit, 0, "unowned-root text must remain visible: {envelope}");
+        assert_eq!(
+            findings(&envelope),
+            vec![if legacy {
+                ".mine/design/reference.md:1"
+            } else {
+                "docs/design/reference.md:1"
+            }]
+        );
+    }
 }
 
 #[test]
@@ -263,8 +307,24 @@ fn scan_non_git_repo_fails_closed() {
     let tmp = tempfile::tempdir().unwrap();
     // mine-release-allow-plan-reference: scanner test fixture
     std::fs::write(tmp.path().join("f.txt"), "Plan 9\n").unwrap();
-    let (exit, env) = run_scan(tmp.path(), true);
-    assert_ne!(exit, 0, "non-git must fail closed: {env}");
+    // Plan-isolated TMP lives inside the real repository. Prevent Git's normal
+    // parent discovery from turning this deliberately non-Git fixture into a
+    // subdirectory of the host repository. Child-only environment, no unsafe
+    // process-global mutation. Git documents this discovery ceiling at:
+    // https://git-scm.com/docs/git#Documentation/git.txt-codeGITCEILINGDIRECTORIEScode
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_mine"))
+        .current_dir(tmp.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env("GIT_CEILING_DIRECTORIES", tmp.path().parent().unwrap())
+        .args(["--repo"])
+        .arg(tmp.path())
+        .args(["scan", "plan-refs", "--check", "--format", "json"])
+        .output()
+        .unwrap();
+    let env: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert!(!output.status.success(), "non-git must fail closed: {env}");
     assert_eq!(env["ok"], false);
 }
 

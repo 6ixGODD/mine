@@ -1,0 +1,12 @@
+# BEGIN MINE governance controls
+design/**/*.md -text -filter -ident -working-tree-encoding
+design/**/*.toml -text -filter -ident -working-tree-encoding
+design/**/*.json -text -filter -ident -working-tree-encoding
+plan/**/*.md -text -filter -ident -working-tree-encoding
+plan/**/*.toml -text -filter -ident -working-tree-encoding
+plan/**/*.json -text -filter -ident -working-tree-encoding
+/config.toml -text -filter -ident -working-tree-encoding
+/verification-policy.json -text -filter -ident -working-tree-encoding
+/.gitignore -text -filter -ident -working-tree-encoding
+/.gitattributes -text -filter -ident -working-tree-encoding
+# END MINE governance controls

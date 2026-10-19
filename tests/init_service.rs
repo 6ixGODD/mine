@@ -38,7 +38,7 @@ fn run_init(root: &Path) -> MineResult<InitOutcome> {
 }
 
 fn marker_path(root: &Path) -> PathBuf {
-    root.join("docs").join("design").join(".mine-design.toml")
+    root.join(".mine").join("design").join(".mine-design.toml")
 }
 
 fn config_path(root: &Path) -> PathBuf {
@@ -59,7 +59,7 @@ fn write_managed_marker(root: &Path, repository_id: &str) {
 
 fn write_config(root: &Path, repository_id: &str, mine_code_version: &str) {
     let content = format!(
-        "schema_version = 1\nrepository_id = {repository_id:?}\nmine_code_version = {mine_code_version:?}\n\n[branches]\nstable = \"master\"\nintegration = \"dev\"\n\n[design]\nroot = \"docs/design/index.md\"\nmarker = \"docs/design/.mine-design.toml\"\nlanguage = \"en\"\nindex_soft_limit_lines = 250\nleaf_soft_limit_lines = 400\n\n[plan]\nroot = \"docs/plan\"\nephemeral = true\npurge_before_stable_release = true\n\n[graph]\nsource = \"docs/plan/execution-graph.toml\"\nrendered = \"docs/plan/execution-graph.md\"\nlock_timeout_ms = 5000\n"
+        "schema_version = 1\nrepository_id = {repository_id:?}\nmine_code_version = {mine_code_version:?}\n\n[branches]\nstable = \"master\"\nintegration = \"dev\"\n\n[design]\nroot = \".mine/design/index.md\"\nmarker = \".mine/design/.mine-design.toml\"\nlanguage = \"en\"\nindex_soft_limit_lines = 250\nleaf_soft_limit_lines = 400\n\n[plan]\nroot = \".mine/plan\"\nephemeral = true\npurge_before_stable_release = true\n\n[graph]\nsource = \".mine/plan/execution-graph.toml\"\nrendered = \".mine/plan/execution-graph.md\"\nlock_timeout_ms = 5000\n"
     );
     fs::create_dir_all(config_path(root).parent().unwrap()).unwrap();
     fs::write(config_path(root), content).unwrap();
@@ -100,12 +100,12 @@ fn absent_design_root_creates_scaffold_marker_and_config() {
     assert_eq!(config.mine_code_version, "0.1.0");
     assert_eq!(config.branches.stable, "master");
     assert_eq!(config.branches.integration, "dev");
-    assert_eq!(config.design.root, "docs/design/index.md");
+    assert_eq!(config.design.root, ".mine/design/index.md");
     assert!(config.plan.ephemeral);
     assert!(config.plan.purge_before_stable_release);
 
     // Design root index scaffold created.
-    assert!(root.join("docs").join("design").join("index.md").exists());
+    assert!(root.join(".mine").join("design").join("index.md").exists());
 
     // Runtime ignore rules created.
     let gitignore = root.join(".mine").join(".gitignore");
@@ -119,15 +119,12 @@ fn absent_design_root_creates_scaffold_marker_and_config() {
     assert!(root.join("AGENTS.md").exists());
 
     // No plan workspace is created by init.
-    assert!(!root.join("docs").join("plan").exists());
+    assert!(!root.join(".mine").join("plan").exists());
 
     // Marker and config creation recorded as actions.
-    assert!(
-        outcome
-            .actions
-            .iter()
-            .any(|a| matches!(a, InitAction::Created(p) if p == &marker_path(root)))
-    );
+    assert!(outcome.actions.iter().any(
+        |a| matches!(a, InitAction::Created(p) if p == &marker_path(root).canonicalize().unwrap())
+    ));
     assert!(
         outcome
             .actions
@@ -171,70 +168,34 @@ fn init_is_idempotent_when_managed() {
 }
 
 #[test]
-fn legacy_unmarked_design_dir_is_backed_up_and_replaced() {
+fn user_docs_are_not_claimed_or_backed_up() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
-    fs::create_dir_all(root.join("docs").join("design")).unwrap();
+    fs::create_dir_all(root.join("docs/design")).unwrap();
     fs::write(
-        root.join("docs").join("design").join("legacy.md"),
-        "legacy architecture notes",
+        root.join("docs/design/legacy.md"),
+        "user architecture notes",
     )
     .unwrap();
-
-    let outcome = run_init(root).expect("legacy root is backed up and init proceeds");
-    assert!(outcome.actions.iter().any(|a| matches! {
-        a,
-        InitAction::BackedUpDesign { .. }
-    }));
-
-    // MINE-managed root created.
+    run_init(root).expect("new governance does not occupy user docs");
     assert!(marker_path(root).exists());
-    assert!(config_path(root).exists());
-    // Legacy content preserved in a backup directory.
-    let backups: Vec<_> = fs::read_dir(root.join("docs"))
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("design-backup-")
-        })
-        .collect();
-    assert_eq!(backups.len(), 1);
     assert_eq!(
-        fs::read_to_string(backups[0].path().join("legacy.md")).unwrap(),
-        "legacy architecture notes"
+        fs::read_to_string(root.join("docs/design/legacy.md")).unwrap(),
+        "user architecture notes"
     );
+    assert_eq!(fs::read_dir(root.join("docs")).unwrap().count(), 1);
 }
 
 #[test]
-fn foreign_marker_is_backed_up_and_replaced() {
+fn foreign_marker_is_refused_and_preserved() {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
     write_marker(root, "some-id", "OtherTool", "2026-07-23T00:00:00Z");
-
-    let outcome = run_init(root).expect("foreign-marker root is backed up and init proceeds");
-    assert!(outcome.actions.iter().any(|a| matches! {
-        a,
-        InitAction::BackedUpDesign { .. }
-    }));
-
-    // Fresh MINE-managed marker + config created.
-    assert!(marker_path(root).exists());
-    assert!(config_path(root).exists());
-    // The foreign marker was moved into the backup, not destroyed.
-    let backups: Vec<_> = fs::read_dir(root.join("docs"))
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with("design-backup-")
-        })
-        .collect();
-    assert_eq!(backups.len(), 1);
-    let backed_up_marker = fs::read_to_string(backups[0].path().join(".mine-design.toml")).unwrap();
-    assert!(backed_up_marker.contains("OtherTool"));
+    let before = fs::read(marker_path(root)).unwrap();
+    let error = run_init(root).expect_err("foreign governance cannot be claimed");
+    assert_eq!(error.code(), "MINE_DESIGN_NAMESPACE_CONFLICT");
+    assert_eq!(fs::read(marker_path(root)).unwrap(), before);
+    assert!(!config_path(root).exists());
 }
 
 #[test]

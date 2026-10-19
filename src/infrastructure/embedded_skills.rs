@@ -75,8 +75,8 @@ pub const EMBEDDED_SKILL_FILES: &[EmbeddedSkillFile] = &[
         content: include_str!("../../skills/mine-plan-review/SKILL.md"),
     },
     EmbeddedSkillFile {
-        path: "skills/mine-plan-review/references/scan-plan-refs.sh",
-        content: include_str!("../../skills/mine-plan-review/references/scan-plan-refs.sh"),
+        path: "skills/mine-plan-review/references/native-closure.md",
+        content: include_str!("../../skills/mine-plan-review/references/native-closure.md"),
     },
     EmbeddedSkillFile {
         path: "skills/mine-sync/SKILL.md",

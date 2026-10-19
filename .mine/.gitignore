@@ -2,3 +2,17 @@
 runtime/
 locks/
 build/
+# BEGIN MINE governance controls
+/runtime/
+/locks/
+/build/
+/worktrees/
+!/.gitignore
+!/.gitattributes
+!/config.toml
+!/verification-policy.json
+!/design/
+!/design/**
+!/plan/
+!/plan/**
+# END MINE governance controls

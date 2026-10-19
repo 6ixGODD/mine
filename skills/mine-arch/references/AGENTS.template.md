@@ -1,12 +1,14 @@
+<!-- mine-managed-agents -->
 # Agent Working Agreement
 
 ## Source of truth
-- Design knowledge base root: `docs/design/index.md` (progressive disclosure; MINE owns `docs/design/`)
-- Design ownership marker: `docs/design/.mine-design.toml`
-- Execution plans: `docs/plan/`
-- Execution graph machine source: `docs/plan/execution-graph.toml`
-- Generated execution graph view: `docs/plan/execution-graph.md`
-- Implementation and review reports: `docs/plan/reports/`
+- Design knowledge base root: `.mine/design/index.md` (progressive disclosure; MINE owns `.mine/design/`)
+- Design ownership marker: `.mine/design/.mine-design.toml`
+- Execution plans: `.mine/plan/`
+- Execution graph machine source: `.mine/plan/execution-graph.toml`
+- Generated execution graph view: `.mine/plan/execution-graph.md`
+- Implementation and review reports: `.mine/plan/reports/`
+- Project configuration: `.mine/config.toml`; configured contained paths are authoritative. The paths above are fresh defaults, never permission to redirect an active legacy workspace or move user `docs/`.
 - Read requirements and current implementation evidence before changing design or code.
 
 ## Design rules
@@ -29,7 +31,7 @@ This is a new project unless the user explicitly states otherwise. When a later 
 ## Plan immutability
 - A plan becomes immutable when handed to an implementation agent, execution begins, or a report records execution.
 - Do not edit, rename, renumber, delete, or replace an immutable plan.
-- Correct architecture first, then create a next-numbered compensating plan.
+- Material replacement changes correct architecture/ADR approval first, then use the next contiguous sibling compensation. Narrow unambiguous fixes of already-accepted behavior do not require a ceremonial new Plan.
 
 ## Plan execution
 - Read and understand the whole requested plan, governing architecture sections, predecessors, and registered official sources before editing.
@@ -37,8 +39,11 @@ This is a new project unless the user explicitly states otherwise. When a later 
 - Ask the user when an uncovered decision changes product behavior, architecture, persistence, public contracts, security/privacy, compatibility, deployment responsibility, or acceptance criteria.
 - Resolve bounded local implementation decisions using architecture, official documentation, and repository convention; record them in the implementation report.
 - Preserve unrelated changes and stage only explicit in-scope files.
+- Responsibility/namespaces, supported behavior and exclusions govern scope; physical mappings locate it. Internal file/symbol splits within that authority need no repeated approval. Cross-contract behavior/persistence/security/acceptance changes still require owner decisions.
+- Conservative authority needs nonempty physical mapping. Semantic authority requires the exact applicable approved policy/ADR body binding. Never fabricate approval, downgrade invalid policy or replace a graph observation with the independent ADR registry revision.
+- Frozen ownership clarification is append-only, body/policy/identity/actor/reason/revision-bound native evidence. It cannot change behavior/dependencies/acceptance or rehash tampered Plan bodies; absent historical identity is not invented.
 - New Plan IDs and filenames use the canonical `planNN(?:-NN)*(?:-CNN)?`
-  grammar and exact `docs/plan/<id>-<lower-kebab-slug>.md` form; legacy aliases
+  grammar and exact `.mine/plan/<id>-<lower-kebab-slug>.md` form; legacy aliases
   are not created.
 
 ## Lightweight maintenance
@@ -46,9 +51,14 @@ This is a new project unless the user explicitly states otherwise. When a later 
 MINE governs engineering change, not every repository edit. Direct, bounded, behavior-preserving maintenance (typo fixes, prose cleanup, translation, broken-link repair, README improvements, user-facing documentation additions, formatting-only documentation changes, examples/comments describing already-accepted behavior) may proceed without a MINE execution Plan when the correct result is unambiguous and no durable engineering contract changes. Such work still must respect this `AGENTS.md`, preserve unrelated changes, stage explicit files, run relevant validation, use normal commit discipline, and never silently change product behavior while claiming to be docs-only. Changes that alter or establish durable engineering behavior (business/runtime behavior, architecture, public API, CLI semantics, MCP contracts, Skill workflow, execution-graph/state-machine behavior, release behavior, branch lifecycle, persistence/schema/migration, security/privacy/authority boundaries, deployment/operational contracts, durable Design decisions) require the normal MINE lifecycle. A documentation file is not automatically lightweight maintenance: if it changes the authoritative contract rather than describing already-accepted behavior, it belongs in normal MINE governance.
 
 ## Parallel execution
-- Use MINE CLI/MCP to query and transition `docs/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
-- Parallel lanes require disjoint write scopes, one owner per shared file, explicit start gates, join gates, and integration ownership.
+- Use MINE CLI/MCP to query and transition `.mine/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
+- Parallel lanes require explicit responsibility/exclusions/mapping, one owner per shared file, start/join gates and integration ownership. Physical overlap requires its exact approved semantic partition/shared-entry rule; algorithms, schemas, migrations, lockfiles, generators and mutable outputs remain exclusive otherwise.
 - Manifests, lockfiles, migrations, generated schemas/clients, root quality configuration, central registries, the execution graph, and reports are serialized unless a plan explicitly assigns one owner.
+- Native wave/start compares complete held IN_PROGRESS/IMPLEMENTED owners and selected candidates. READY is advisory eligibility; stopped/silent writers do not release ownership. Invalid required policy never drops a held owner.
+- Root remains on configured integration while a Plan workspace is open; only authorized release integration may move it to stable. Plan branches are checked out solely in registered linked worktrees. Rejection preserves its ref and reuses the lineage checkout for the next compensation.
+- Prepare records explicit actor, original observer, operation identity and generation; production edits require completed start/checkpoint. After unknown effects query/resume the same operation, never duplicate execution or manual graph-only fast-forward.
+- Acceptance requires independent stopped-writer handoff, pinned review, exact reviewed integration, actual applicable gates and safe removal of only the merged clean worktree/local branch before terminal checkpoint completion. No self-acceptance or forced cleanup.
+- Generators have one input-to-complete-output-to-seal transaction owner. Regenerate once from combined accepted inputs, not stale lane output copies; every gate must have output authority.
 
 ### Shared environment and Plan-isolated mutable outputs
 
@@ -76,9 +86,10 @@ MINE governs engineering change, not every repository edit. Direct, bounded, beh
 - Do not weaken configuration, add blanket ignores, or change acceptance thresholds merely to obtain green output.
 
 ## Evidence and reports
-- Record exact commands, exit codes, concise observed output, inspected artifacts, skipped checks, failures, remaining risks, and preserved unrelated changes in `docs/plan/reports/`.
+- Record exact commands, exit codes, concise observed output, inspected artifacts, skipped checks, failures, remaining risks, and preserved unrelated changes in `.mine/plan/reports/`.
 - Implementation agents may conclude `IMPLEMENTED`, never `ACCEPTED`.
 - Independent review is required for `ACCEPTED`.
+- Distinguish RUN/REUSED/INVALIDATED/NON_REUSABLE/NOT_RUN with exact input and artifact identity. Reuse applicable evidence without duplicate suites, but preserve changed-input, independent and native requirements, first failures and unavailable hosts.
 
 ## Commit discipline
 - Use Conventional Commits and repository conventions.
@@ -88,6 +99,7 @@ MINE governs engineering change, not every repository edit. Direct, bounded, beh
 
 ## MINE graph discipline
 
-- Never edit `docs/plan/execution-graph.toml` or `docs/plan/execution-graph.md` directly.
+- Never edit `.mine/plan/execution-graph.toml` or `.mine/plan/execution-graph.md` directly.
 - Register plans and perform lifecycle transitions only through the installed `mine` MCP tools or `mine --format json` CLI.
 - Carry the observed revision into every write operation and stop on revision conflicts.
+- Commit only owned Plan/report/policy inputs before graph writes. Native checkpoints own the exact graph pair; an incomplete response can mean persisted pending state, not rollback. Inspect returned operation/checkpoint completion and resume that same operation before new conflicting writes. Never manually commit or fast-forward its pending graph state.

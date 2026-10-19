@@ -15,8 +15,8 @@
 //! transport -- the same code path real clients use.
 //!
 //! Every test uses an ISOLATED TEMPORARY repository seeded via
-//! `tests::common::seeded_repo`. The live repository graph is snapshotted
-//! before and after the test binary and asserted byte-identical.
+//! `tests::common::seeded_repo`. On-disk development-fixture byte guards detect
+//! accidental fixture edits; they do not claim a live Root graph audit.
 
 // `tests/common/mod.rs` is a shared helper module (reused across
 // suite); this binary uses only a subset of its helpers, so silence the
@@ -112,9 +112,12 @@ fn parse_result(result: &CallToolResult) -> Value {
 /// `03` READY (no predecessors). `02` and `03` are startable; `01` is a
 /// terminal anchor.
 fn fixture() -> (TempDir, PathBuf) {
-    let p01 = node("01", PlanStatus::Accepted, &[], &[]);
-    let p02 = node("02", PlanStatus::Ready, &[], &["01"]);
-    let p03 = node("03", PlanStatus::Ready, &[], &[]);
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    let p01 = node("plan01", PlanStatus::Accepted, &[], &[]);
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    let p02 = node("plan02", PlanStatus::Ready, &[], &["plan01"]);
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    let p03 = node("plan03", PlanStatus::Ready, &[], &[]);
     seeded_repo(vec![p01, p02, p03])
 }
 
@@ -139,78 +142,96 @@ fn dispatch(repo: &Path, args: &[&str]) -> Outcome {
 }
 
 fn start_fixture() -> (TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().to_path_buf();
-    git(&repo, &["init", "--quiet"]);
-    git(&repo, &["config", "user.email", "test@example.com"]);
-    git(&repo, &["config", "user.name", "test"]);
-    std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
-    std::fs::write(repo.join(".gitignore"), "/.mine/\n").unwrap();
-    git(&repo, &["add", "README.md", ".gitignore"]);
-    git(&repo, &["commit", "--quiet", "-m", "initial"]);
-    assert_eq!(dispatch(&repo, &["init"]).exit_code, 0);
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "--quiet", "-m", "mine init"]);
-    git(&repo, &["switch", "-c", "dev"]);
-    assert_eq!(dispatch(&repo, &["workspace", "open"]).exit_code, 0);
-    // mine-release-allow-plan-reference: MCP multi-Plan setup fixture
-    for id in ["plan02", "plan03"] {
-        let path = format!("docs/plan/{id}-fixture.md");
-        std::fs::write(repo.join(&path), format!("# {id}\n")).unwrap();
-        assert_eq!(
-            dispatch(
-                &repo,
-                &[
-                    "plan",
-                    "add",
-                    "--id",
-                    id,
-                    "--path",
-                    &path,
-                    "--title",
-                    "fixture",
-                    "--design-ref",
-                    "docs/design/index.md",
-                    "--write",
-                    "src/",
-                ],
-            )
-            .exit_code,
-            0
-        );
-        assert_eq!(
-            dispatch(&repo, &["plan", "release", "--id", id]).exit_code,
-            0
-        );
-    }
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "--quiet", "-m", "register plans"]);
+    let (tmp, repo) = seeded_repo(vec![
+        // mine-release-allow-plan-reference: explicit legacy READY fixture, native preparation follows
+        node("plan02", PlanStatus::Ready, &[], &[]),
+        // mine-release-allow-plan-reference: disjoint second READY lineage fixture
+        node("plan03", PlanStatus::Ready, &[], &[]),
+    ]);
     // mine-release-allow-plan-reference: MCP multi-Plan prepare fixture
-    for id in ["plan02", "plan03"] {
-        assert_eq!(
-            dispatch(&repo, &["plan", "prepare", "--id", id]).exit_code,
-            0
+    for (id, observed) in [("plan02", "72"), ("plan03", "73")] {
+        let operation = uuid::Uuid::new_v4().to_string();
+        let outcome = dispatch(
+            &repo,
+            &[
+                "plan",
+                "prepare",
+                "--id",
+                id,
+                "--actor",
+                "fixture-preparer",
+                "--expected-revision",
+                observed,
+                "--operation-id",
+                &operation,
+            ],
         );
+        assert_eq!(outcome.exit_code, 0, "{}", common::envelope_json(&outcome));
     }
+    assert_eq!(common::load_graph(&repo).revision, 74);
     (tmp, repo)
+}
+
+fn commit_fixture_files(repo: &Path, paths: &[&str]) {
+    let mut args = vec!["add", "--"];
+    args.extend_from_slice(paths);
+    git(repo, &args);
+    git(
+        repo,
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "explicit public transport fixture inputs",
+        ],
+    );
+}
+
+fn git_text(repo: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(repo)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().into()
 }
 
 /// Gracefully closes the client so the child server exits on stdin EOF instead
 /// of being killed on drop (avoids leaking processes on test failure).
 async fn shutdown(client: RunningService<RoleClient, ()>) {
     let mut c = client;
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), c.close()).await;
+    let reason = tokio::time::timeout(std::time::Duration::from_secs(5), c.close())
+        .await
+        .expect("MCP transport shutdown timed out")
+        .expect("MCP transport task failed during shutdown");
+    assert!(
+        matches!(
+            reason,
+            rmcp::service::QuitReason::Cancelled | rmcp::service::QuitReason::Closed
+        ),
+        "MCP shutdown failed: {reason:?}"
+    );
+    assert!(c.is_closed());
 }
 
 #[tokio::test]
-async fn lists_all_eighteen_tools_with_schemas() {
+async fn lists_all_nineteen_tools_with_schemas() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
     let client = connect(repo).await;
+    let initialization = client
+        .peer_info()
+        .expect("actual server initialization info")
+        .clone();
     let tools = client.peer().list_all_tools().await.expect("list tools");
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 
     let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
     let expected = [
@@ -221,6 +242,7 @@ async fn lists_all_eighteen_tools_with_schemas() {
         "mine_graph_wave",
         "mine_plan_show",
         "mine_graph_repair_provenance",
+        "mine_graph_repair_compensation_predecessors",
         "mine_design_validate",
         "mine_adr_show",
         "mine_adr_list",
@@ -236,13 +258,51 @@ async fn lists_all_eighteen_tools_with_schemas() {
     for e in expected {
         assert!(names.contains(&e), "missing tool {e}; got {names:?}");
     }
-    assert_eq!(names.len(), 18, "exactly 18 tools; got {names:?}");
+    assert_eq!(names.len(), 19, "exactly 19 tools; got {names:?}");
     for t in &tools {
         assert!(
             !t.input_schema.is_empty(),
             "tool {} has an empty input schema",
             t.name
         );
+    }
+    let repair = tools
+        .iter()
+        .find(|tool| tool.name == "mine_graph_repair_compensation_predecessors")
+        .expect("repair tool is registered");
+    let schema = serde_json::to_value(&repair.input_schema).unwrap();
+    assert_eq!(
+        schema["required"],
+        serde_json::json!(["actor", "id", "expected_revision", "reason"])
+    );
+    let properties = schema["properties"].as_object().unwrap();
+    assert!(properties.contains_key("id"));
+    assert!(properties.contains_key("actor"));
+    assert!(properties.contains_key("expected_revision"));
+    assert!(properties.contains_key("reason"));
+    assert!(!properties.contains_key("hard_predecessors"));
+    if let Some(directory) = std::env::var_os("MINE_PUBLIC_CONTRACT_OUTPUT") {
+        let directory = PathBuf::from(directory);
+        let target =
+            PathBuf::from(std::env::var_os("CARGO_TARGET_DIR").expect("isolated target namespace"));
+        assert!(directory.is_absolute() && directory.starts_with(target.parent().unwrap()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let binary = Path::new(env!("CARGO_BIN_EXE_mine"));
+        let evidence = json!({
+            "scope":"actual_stdio_initialization_and_tools_list_only",
+            "performance_contract":"OPEN_NOT_VALIDATED_BY_THIS_ARTIFACT",
+            "binary_sha256":mine::infrastructure::graph_checkpoint::digest(&std::fs::read(binary).unwrap()),
+            "initialization":initialization,
+            "tools":tools,
+        });
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(directory.join("actual-mcp-inventory.json"))
+            .unwrap()
+            .write_all(&serde_json::to_vec_pretty(&evidence).unwrap())
+            .unwrap();
     }
 }
 
@@ -254,7 +314,7 @@ async fn workspace_status_reports_revision_and_plan_count() {
     let v = call_tool(&client, "mine_workspace_status", json!({})).await;
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert_eq!(v.get("ok").and_then(|o| o.as_bool()), Some(true));
     assert_eq!(v.get("plan_count").and_then(|p| p.as_u64()), Some(3));
     assert!(v.get("revision").and_then(|r| r.as_u64()).is_some());
@@ -269,7 +329,7 @@ async fn graph_status_aliases_workspace_status() {
     let v = call_tool(&client, "mine_graph_status", json!({})).await;
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert_eq!(v.get("ok").and_then(|o| o.as_bool()), Some(true));
     assert_eq!(
         v.get("command").and_then(|c| c.as_str()),
@@ -296,8 +356,10 @@ async fn graph_validate_ready_wave() {
         .and_then(|x| x.as_array())
         .expect("ready array");
     let ready_ids: Vec<&str> = ready.iter().filter_map(|x| x.as_str()).collect();
-    assert!(ready_ids.contains(&"02"), "02 ready, got {ready_ids:?}");
-    assert!(ready_ids.contains(&"03"), "03 ready, got {ready_ids:?}");
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    assert!(ready_ids.contains(&"plan02"), "02 ready, got {ready_ids:?}");
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    assert!(ready_ids.contains(&"plan03"), "03 ready, got {ready_ids:?}");
 
     // `wave` is a write-scope-disjoint subset of ready.
     let w = call_tool(&client, "mine_graph_wave", json!({})).await;
@@ -306,7 +368,7 @@ async fn graph_validate_ready_wave() {
 
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -314,16 +376,18 @@ async fn plan_show_returns_plan_fields() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
     let client = connect(repo).await;
-    let v = call_tool(&client, "mine_plan_show", json!({ "id": "02" })).await;
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    let v = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert_eq!(v.get("ok").and_then(|o| o.as_bool()), Some(true));
     let plan = v
         .get("data")
         .and_then(|d| d.get("plan"))
         .expect("data.plan");
-    assert_eq!(plan.get("id").and_then(|i| i.as_str()), Some("02"));
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    assert_eq!(plan.get("id").and_then(|i| i.as_str()), Some("plan02"));
     assert_eq!(plan.get("status").and_then(|s| s.as_str()), Some("READY"));
     assert!(plan.get("registered_worktree_path").is_some());
     assert!(plan.get("resolved_worktree_path").is_some());
@@ -335,19 +399,29 @@ async fn plan_show_returns_plan_fields() {
 }
 
 #[tokio::test]
-async fn current_graph_provenance_repair_is_an_idempotent_mcp_operation() {
+async fn supported_graph_provenance_repair_migrates_once_then_mcp_is_idempotent() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
     let client = connect(repo).await;
+    let migrated = call_tool(
+        &client,
+        "mine_graph_repair_provenance",
+        json!({ "actor":"fixture-repairer", "expected_revision": 72 }),
+    )
+    .await;
+    assert_eq!(migrated["ok"], true, "{migrated}");
+    assert_eq!(migrated["data"]["changed"], true, "{migrated}");
+    assert_eq!(migrated["revision_before"], 72);
+    assert_eq!(migrated["revision_after"], 73);
     let value = call_tool(
         &client,
         "mine_graph_repair_provenance",
-        json!({ "expected_revision": 72 }),
+        json!({"actor":"fixture-repairer","expected_revision":73}),
     )
     .await;
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert_eq!(value.get("ok").and_then(|ok| ok.as_bool()), Some(true));
     assert_eq!(
         value
@@ -358,11 +432,11 @@ async fn current_graph_provenance_repair_is_an_idempotent_mcp_operation() {
     );
     assert_eq!(
         value.get("revision_before").and_then(|rev| rev.as_u64()),
-        Some(72)
+        Some(73)
     );
     assert_eq!(
         value.get("revision_after").and_then(|rev| rev.as_u64()),
-        Some(72)
+        Some(73)
     );
 }
 
@@ -374,7 +448,7 @@ async fn design_validate_runs() {
     let v = call_tool(&client, "mine_design_validate", json!({})).await;
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert_eq!(v.get("ok").and_then(|o| o.as_bool()), Some(true));
     assert!(
         v.get("data").and_then(|d| d.get("valid")).is_some(),
@@ -386,6 +460,10 @@ async fn design_validate_runs() {
 async fn plan_add_creates_draft_plan() {
     let before = live_graph_bytes();
     let (tmp, repo) = fixture();
+    // mine-release-allow-plan-reference: immutable new Plan body for actual MCP registration
+    let plan_path = ".mine/plan/plan01-04-test-node.md";
+    std::fs::write(repo.join(plan_path), "# Public MCP registration fixture\n").unwrap();
+    commit_fixture_files(&repo, &[plan_path]);
     let client = connect(repo).await;
 
     let added = call_tool(
@@ -395,11 +473,13 @@ async fn plan_add_creates_draft_plan() {
             // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
             "id": "plan01-04",
             // mine-release-allow-plan-reference: canonical Plan grammar or protocol fixture
-            "path": "docs/plan/plan01-04-test-node.md",
+            "path": ".mine/plan/plan01-04-test-node.md",
             "title": "Test node",
-            "design_references": ["docs/design/principles.md"],
+            "actor":"fixture-planner", "expected_revision":72,
+            "design_references": [".mine/design/index.md"],
             "exclusive_write_paths": ["tests/04/"],
-            "hard_predecessors": ["01"]
+            // mine-release-allow-plan-reference: isolated canonical MCP fixture
+            "hard_predecessors": ["plan01"]
         }),
     )
     .await;
@@ -432,81 +512,131 @@ async fn plan_add_creates_draft_plan() {
 
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
-async fn plan_lifecycle_start_implemented_accept() {
+async fn registration_refuses_omitted_and_empty_conservative_mapping_without_mutation() {
+    let (_tmp, repo) = seeded_repo(vec![]);
+    // mine-release-allow-plan-reference: otherwise valid registration body
+    let body = ".mine/plan/plan06-fixture.md";
+    std::fs::write(repo.join(body), "# Explicit registration fixture\n").unwrap();
+    commit_fixture_files(&repo, &[body]);
+    let state = || {
+        let directory = repo.join(".mine/runtime/operations");
+        let mut journal = if directory.exists() {
+            std::fs::read_dir(directory)
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    assert!(entry.file_type().unwrap().is_file());
+                    (entry.file_name(), std::fs::read(entry.path()).unwrap())
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        journal.sort();
+        (
+            std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
+            std::fs::read(repo.join(".mine/plan/execution-graph.md")).unwrap(),
+            git_text(&repo, &["rev-parse", "HEAD"]),
+            git_text(
+                &repo,
+                &["for-each-ref", "--format=%(refname) %(objectname)"],
+            ),
+            std::fs::read(repo.join(".git/index")).unwrap(),
+            journal,
+        )
+    };
+    let before = state();
+    let client = connect(repo.clone()).await;
+    for empty_array in [false, true] {
+        let mut arguments = json!({
+            // mine-release-allow-plan-reference: valid identity cannot replace missing authority
+            "id":"plan06", "path":body,"title":"Missing mapping","actor":"fixture-planner","expected_revision":72,"design_references":[".mine/design/index.md"]
+        });
+        if empty_array {
+            arguments["exclusive_write_paths"] = json!([]);
+        }
+        let result = call_tool_raw(&client, "mine_plan_add", arguments).await;
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert!(
+            format!("{result:?}").contains("conservative mapping is required"),
+            "{result:?}"
+        );
+        assert_eq!(
+            state(),
+            before,
+            "empty_array={empty_array}: failed registration mutated state"
+        );
+    }
+    shutdown(client).await;
+}
+
+#[tokio::test]
+async fn plan_lifecycle_start_implemented_refuses_report_only_acceptance() {
     let before = live_graph_bytes();
     let (tmp, repo) = start_fixture();
-    let client = connect(repo).await;
-
-    // Start a READY node (READY -> IN_PROGRESS).
-    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-    let started = call_tool(&client, "mine_plan_start", json!({ "id": "plan02" })).await;
-    assert_eq!(started.get("ok").and_then(|o| o.as_bool()), Some(true));
-    assert_eq!(
-        started.get("command").and_then(|c| c.as_str()),
-        Some("plan.start")
-    );
-    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
-    assert_eq!(
-        s.get("data")
-            .and_then(|d| d.get("plan"))
-            .and_then(|p| p.get("status"))
-            .and_then(|st| st.as_str()),
-        Some("IN_PROGRESS")
-    );
-
-    // Mark implemented (IN_PROGRESS -> IMPLEMENTED).
-    let impld = call_tool(
-        &client,
-        "mine_plan_mark_implemented",
-        json!({
-            // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-            "id": "plan02",
-            "report": "docs/plan/reports/02-impl.md",
-            "commits": ["abc123"]
-        }),
+    let client = connect(repo.clone()).await;
+    // mine-release-allow-plan-reference: prepared MCP lifecycle subject
+    let started = call_tool(&client, "mine_plan_start", json!({"id":"plan02","expected_revision":74,"owner":"mcp-executor","run_id":"mcp-fixture-run"})).await;
+    assert_eq!(started["ok"], true, "{started}");
+    // mine-release-allow-plan-reference: exact registered worktree/write namespace
+    let target = repo.join(".mine/worktrees/plan02");
+    // mine-release-allow-plan-reference: explicit fixture product output
+    let product = "tests/plan02/result.txt";
+    // mine-release-allow-plan-reference: isolated canonical MCP fixture
+    std::fs::create_dir_all(target.join("tests/plan02")).unwrap();
+    std::fs::write(target.join(product), "actual fixture implementation\n").unwrap();
+    commit_fixture_files(&target, &[product]);
+    let tip = git_text(&target, &["rev-parse", "HEAD"]);
+    // mine-release-allow-plan-reference: canonical report path for implemented fixture
+    let report = ".mine/plan/reports/plan02-fixture-implementation.md";
+    std::fs::create_dir_all(repo.join(".mine/plan/reports")).unwrap();
+    std::fs::write(
+        repo.join(report),
+        "Actual implementation commit and focused fixture evidence\n",
     )
-    .await;
-    assert_eq!(impld.get("ok").and_then(|o| o.as_bool()), Some(true));
-    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
-    assert_eq!(
-        s.get("data")
-            .and_then(|d| d.get("plan"))
-            .and_then(|p| p.get("status"))
-            .and_then(|st| st.as_str()),
-        Some("IMPLEMENTED")
-    );
-
-    // Accept (IMPLEMENTED -> ACCEPTED).
-    let accepted = call_tool(
+    .unwrap();
+    commit_fixture_files(&repo, &[report]);
+    let implemented = call_tool(&client, "mine_plan_mark_implemented", json!({
+        // mine-release-allow-plan-reference: native implementation transport fixture
+        "id":"plan02","actor":"mcp-executor","expected_revision":75,"report":report,"commits":[tip]
+    })).await;
+    assert_eq!(implemented["ok"], true, "{implemented}");
+    let graph = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
+    let head = git_text(&repo, &["rev-parse", "HEAD"]);
+    // Report-string acceptance was deliberately removed by the accepted native
+    // closure contract. A real positive MCP finalization/replay is independently
+    // covered in lifecycle_operations; do not fabricate evidence to revive it.
+    let legacy = call_tool_raw(
         &client,
         "mine_plan_accept",
         json!({
-            // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-            "id": "plan02",
-            "review": "docs/plan/reports/02-review.md"
+            // mine-release-allow-plan-reference: obsolete request must refuse before effects
+            "id":"plan02","review":".mine/plan/reports/plan02-fixture-review.md"
         }),
     )
     .await;
-    assert_eq!(accepted.get("ok").and_then(|o| o.as_bool()), Some(true));
-    // mine-release-allow-plan-reference: MCP lifecycle Plan fixture
-    let s = call_tool(&client, "mine_plan_show", json!({ "id": "plan02" })).await;
+    assert_eq!(legacy.is_error, Some(true), "{legacy:?}");
+    let forged = call_tool_raw(&client, "mine_plan_accept", json!({
+        // mine-release-allow-plan-reference: well-typed request still needs a real closure
+        "id":"plan02","expected_revision":76,"operation_id":uuid::Uuid::new_v4().to_string(),"input":".mine/runtime/no-closure.json"
+    })).await;
+    assert_eq!(forged.is_error, Some(true), "{forged:?}");
+    // mine-release-allow-plan-reference: refused acceptance preserves IMPLEMENTED state
+    let shown = call_tool(&client, "mine_plan_show", json!({"id":"plan02"})).await;
+    assert_eq!(shown["data"]["plan"]["status"], "IMPLEMENTED", "{shown}");
     assert_eq!(
-        s.get("data")
-            .and_then(|d| d.get("plan"))
-            .and_then(|p| p.get("status"))
-            .and_then(|st| st.as_str()),
-        Some("ACCEPTED")
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
+        graph
     );
-
+    assert_eq!(git_text(&repo, &["rev-parse", "HEAD"]), head);
+    assert_eq!(git_text(&target, &["rev-parse", "HEAD"]), tip);
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -517,12 +647,14 @@ async fn plan_add_records_explicit_planning_scope() {
     // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
     std::fs::write(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        repo.join("docs/plan/plan04-fixture.md"),
+        repo.join(".mine/plan/plan04-fixture.md"),
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
         "# plan04
 ",
     )
     .unwrap();
+    // mine-release-allow-plan-reference: commit exact new fixture body before registration
+    commit_fixture_files(&repo, &[".mine/plan/plan04-fixture.md"]);
     let added = call_tool(
         &client,
         "mine_plan_add",
@@ -530,10 +662,12 @@ async fn plan_add_records_explicit_planning_scope() {
             // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
             "id": "plan04",
             // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            "path": "docs/plan/plan04-fixture.md",
+            "path": ".mine/plan/plan04-fixture.md",
             "title": "scoped fixture",
-            "design_references": ["docs/design/index.md"],
-            "planning_scope": "docs/design/execution-graph"
+            "actor":"fixture-planner", "expected_revision":74,
+            "design_references": [".mine/design/index.md"],
+            "exclusive_write_paths":["tests/scoped-fixture/"],
+            "planning_scope": ".mine/design/execution-graph"
         }),
     )
     .await;
@@ -544,40 +678,96 @@ async fn plan_add_records_explicit_planning_scope() {
     );
     // mine-release-allow-plan-reference: MCP scope-binding Plan fixture
     let shown = call_tool(&client, "mine_plan_show", json!({ "id": "plan04" })).await;
+    assert_eq!(
+        shown["ok"], true,
+        "registration succeeded but show failed: {shown}"
+    );
     let plan = shown
         .get("data")
         .and_then(|d| d.get("plan"))
         .expect("data.plan");
     assert_eq!(
         plan.get("planning_scope").and_then(|s| s.as_str()),
-        Some("docs/design/execution-graph"),
+        Some(".mine/design/execution-graph"),
         "explicit planning scope recorded: {plan}"
     );
 
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
 async fn plan_reject_in_progress_with_review_evidence() {
+    use mine::domain::{
+        graph::{PlanIdentity, PlanIdentityFields, RepoPath},
+        ports::Clock,
+    };
+    use mine::infrastructure::{graph_checkpoint::digest, system::SystemClock};
     let before = live_graph_bytes();
     let (tmp, repo) = start_fixture();
     // mine-release-allow-plan-reference: MCP rejection review-path fixture
-    let review = "docs/plan/reports/plan03-fixture-review.md";
+    let review = ".mine/plan/reports/plan03-fixture-review.md";
     let client = connect(repo.clone()).await;
 
     // Start the Plan, then reject directly from IN_PROGRESS with independent
     // review evidence. No implementation evidence may be synthesized.
     // mine-release-allow-plan-reference: MCP rejection Plan fixture
-    let started = call_tool(&client, "mine_plan_start", json!({ "id": "plan03" })).await;
+    let started = call_tool(&client, "mine_plan_start", json!({ "id": "plan03", "expected_revision":74, "owner":"mcp-executor", "run_id":"mcp-rejection-run" })).await;
     assert_eq!(
         started.get("ok").and_then(|value| value.as_bool()),
         Some(true),
         "start result: {started}"
     );
-    std::fs::create_dir_all(repo.join("docs/plan/reports")).unwrap();
-    std::fs::write(repo.join(review), "independent review\n").unwrap();
+    let workspace = common::load_graph(&repo);
+    // mine-release-allow-plan-reference: exact independently reviewed subject
+    let subject = workspace.get("plan03").unwrap();
+    let config = mine::cli::context::load_config(&repo).unwrap();
+    let identity = PlanIdentity::new(PlanIdentityFields {
+        repository_id: config.repository_id,
+        workspace_id: workspace.workspace_id.clone(),
+        plan_id: subject.id.clone(),
+        plan_path: RepoPath::new(subject.path.clone()).unwrap(),
+        body_sha256: Some(digest(&std::fs::read(repo.join(&subject.path)).unwrap())),
+        lineage_id: subject.lineage_id.clone(),
+        branch: subject.branch.clone(),
+    })
+    .unwrap();
+    let assertion = json!({"schema_version":1,"plan":identity,"writer_owner":"mcp-executor","writer_run_id":"mcp-rejection-run","reviewer":"mcp-reviewer","independent_review":true,"writer_stopped":true,"stopped_at":SystemClock.now_utc_rfc3339(),"stop_basis":"Private fixture controller stopped the writer and handed off its unchanged checkout"});
+    let report = format!(
+        "# Independent fixture review\n\nVerdict: REJECTED\n\n```mine-review-closure\n{assertion}\n```\n"
+    );
+    // mine-release-allow-plan-reference: next sibling body precedes pinned rejection intent
+    let compensation_path = ".mine/plan/plan03-C01-fixture.md";
+    let compensation_body = b"# Private compensating Plan fixture\n";
+    std::fs::create_dir_all(repo.join(".mine/plan/reports")).unwrap();
+    std::fs::write(repo.join(review), &report).unwrap();
+    std::fs::write(repo.join(compensation_path), compensation_body).unwrap();
+    commit_fixture_files(&repo, &[review, compensation_path]);
+    let mut compensation = identity.fields().clone();
+    // mine-release-allow-plan-reference: typed sibling compensation identity
+    compensation.plan_id = "plan03-C01".into();
+    compensation.plan_path = RepoPath::new(compensation_path).unwrap();
+    // mine-release-allow-plan-reference: exact registered sibling branch
+    compensation.branch = "plan/plan03-C01-fixture".into();
+    compensation.body_sha256 = Some(digest(compensation_body));
+    let compensation = PlanIdentity::new(compensation).unwrap();
+    let input = json!({"schema_version":1,"actor":"mcp-reviewer","intent":{"kind":"rejected_handoff","plan_id":subject.id,"review":{"reviewed_tip":git_text(&repo.join(&subject.worktree_path), &["rev-parse","HEAD"]),"report":{"path":review,"bytes":report.len(),"sha256":digest(report.as_bytes())}},"compensation":compensation}});
+    let input_path = ".mine/runtime/mcp-rejection-input.json";
+    std::fs::create_dir_all(repo.join(".mine/runtime")).unwrap();
+    std::fs::write(repo.join(input_path), serde_json::to_vec(&input).unwrap()).unwrap();
+    let begun = dispatch(
+        &repo,
+        &[
+            "operation",
+            "begin",
+            "--expected-revision",
+            "75",
+            "--input",
+            input_path,
+        ],
+    );
+    assert_eq!(begun.exit_code, 0, "{}", common::envelope_json(&begun));
 
     let rejected = call_tool(
         &client,
@@ -585,6 +775,7 @@ async fn plan_reject_in_progress_with_review_evidence() {
         json!({
             // mine-release-allow-plan-reference: MCP rejection Plan fixture
             "id": "plan03",
+            "actor":"mcp-reviewer", "expected_revision":75,
             "reason": "scope drift",
             "review_report": review,
             // mine-release-allow-plan-reference: MCP compensation Plan fixture
@@ -629,7 +820,7 @@ async fn plan_reject_in_progress_with_review_evidence() {
 
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -650,6 +841,7 @@ async fn plan_withdraw_retires_prepared_ready_plan() {
         json!({
             // mine-release-allow-plan-reference: MCP withdrawal Plan fixture
             "id": "plan02",
+            "actor":"mcp-coordinator", "expected_revision":74, "operation_id":uuid::Uuid::new_v4().to_string(),
             "reason": "stale after architecture replacement"
         }),
     )
@@ -717,6 +909,7 @@ async fn plan_withdraw_retires_prepared_ready_plan() {
         json!({
             // mine-release-allow-plan-reference: plan-id lifecycle fixture
             "id": "plan02",
+            "actor":"mcp-coordinator", "expected_revision":75, "operation_id":uuid::Uuid::new_v4().to_string(),
             "reason": "again"
         }),
     )
@@ -728,7 +921,7 @@ async fn plan_withdraw_retires_prepared_ready_plan() {
 
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -749,7 +942,7 @@ async fn unknown_tool_returns_protocol_error() {
     assert!(res.is_err(), "unknown tool must be a protocol error");
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -778,7 +971,7 @@ async fn missing_required_argument_is_tool_level_error() {
     );
     shutdown(client).await;
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
 }
 
 #[tokio::test]
@@ -810,7 +1003,7 @@ async fn stdout_is_protocol_only() {
     }
     let output = child.wait_with_output().expect("wait");
     drop(tmp);
-    assert_eq!(live_graph_bytes(), before, "live graph must not change");
+    assert_eq!(live_graph_bytes(), before, "development fixture unchanged");
     assert!(
         output.status.success(),
         "server exited non-zero: {:?}; stderr: {}",

@@ -1,12 +1,12 @@
 [package]
 name = "mine"
-version = "0.1.13"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "MINE Is Not Everyone's: deterministic engineering-workflow core for Claude Code, Codex, Pi, and OpenCode"
 license = "MIT"
 authors = ["BoChen SHEN"]
-repository = "https://github.com/6ixGODD/mine-is-not-everyones"
+repository = "https://github.com/6ixGODD/mine"
 publish = false
 
 [lib]
@@ -22,13 +22,17 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 fs4 = "1.1.0"
 serde_json = "1"
+pulldown-cmark = { version = "0.13.4", default-features = false }
 sha2 = "0.10"
+flate2 = "1"
+tar = "0.4.46"
+zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2"] }
 schemars = { version = "1", features = ["preserve_order"] }
 rmcp = { version = "2.2.0", features = ["transport-io"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "net"] }
 # Comment/ordering-preserving TOML editing for the Codex agent
 # installer config merge (avoids the destructive full-parse/reserialize
 # round trip that drops comments and formatting).
@@ -39,8 +43,8 @@ toml_edit = "0.22"
 crossterm = "0.28"
 ureq = { version = "3", features = ["json"] }
 clap = { version = "4", features = ["derive", "color", "help"] }
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 rmcp = { version = "2.2.0", features = ["client", "transport-child-process"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

@@ -1,0 +1,597 @@
+schema_version = 1
+revision = 82
+
+[[adrs]]
+id = "ADR-0001"
+path = ".mine/design/decisions/0001-toml-execution-graph.md"
+title = "Use TOML as the Execution-Graph Fact Source"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "F9F6B4E3E3CE8805F1374BDC6EEDA1DB8BACBEFA81F45EF01B89DB4661D83315"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0002"
+path = ".mine/design/decisions/0002-ephemeral-plan-workspace.md"
+title = "Treat Planning Artifacts as Ephemeral"
+status = "SUPERSEDED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "ADACE421CFCBE6359743BF44E271EF03CBC697E79161CA05A31B3BC9E699F293"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = "ADR-0023"
+rejection_reason = ""
+updated_at = "2026-10-13T10:08:35.2811499Z"
+
+[[adrs]]
+id = "ADR-0003"
+path = ".mine/design/decisions/0003-english-design-documentation.md"
+title = "Write the Design Knowledge Base in English"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0B2274E0F5564B033246AF71567B03EC927C61DD224328EFA441FE38BCEE5F74"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0004"
+path = ".mine/design/decisions/0004-five-first-class-skills.md"
+title = "Maintain Five First-Class Skills"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "47B0CDAA7E698C533A60F4D7BB8790948FFF8552B48A4D41991AC303FE606938"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0005"
+path = ".mine/design/decisions/0005-code-authority-during-mine-sync.md"
+title = "Code Is the Default Authority During `mine-sync`"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "4853D164AC78D8A12BF37D33C389EA27A3BCA746885A9E4EA409AF8598D95C77"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0006"
+path = ".mine/design/decisions/0006-mine-owns-design-namespace.md"
+title = "MINE Owns `docs/design/`"
+status = "SUPERSEDED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "EE2BF5A2ED748CAD704A9FBCFB5D6A45C8C106B84A5BE3CB4F77D8C7F75F8F54"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence."
+supersedes = []
+superseded_by = "ADR-0023"
+rejection_reason = ""
+updated_at = "2026-10-13T10:08:27.8572048Z"
+
+[[adrs]]
+id = "ADR-0007"
+path = ".mine/design/decisions/0007-canonical-plan-lineage-and-compensation-worktree.md"
+title = "Canonical Plan Lineage and Compensation Worktree Reuse"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "3CE51AA6BF67CAB3771D55EF3E88401EEA273DCFD0B4D7C56FB550F44316248E"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `65D048B8AEA7802973C844B1730A076C626C2CE08603C3BC86EB8A8E4A5F574B`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0008"
+path = ".mine/design/decisions/0008-human-approved-adr-lifecycle.md"
+title = "Human-Approved ADR Lifecycle Before Planning"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0224D8A55061528B722D15514D29370CA56338B21F0222AE6A2E136652F503F5"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `3A32178468650BFF2265F40D676B1AA2F87CB0AD4314D07D2C97A0F54ECBB2A0`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0009"
+path = ".mine/design/decisions/0009-project-specific-detailed-design-readiness.md"
+title = "Keep Detailed-Design Coverage Project-Specific"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "0CD39388215D8044C361DF41A3301DF26F547E410CC722CC03ACF2D37A00FF27"
+proposed_at = "2026-08-21T13:09:49.1202945Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-21T00:00:00Z"
+approval_note = "Imported from the repository's pre-registry ADR approval evidence. Historical proposed-content SHA-256 (non-authoritative audit evidence): `AB207439B386F5CD041230E94C7817AF3B2301532E2825BE4A8E19DA4644726F`."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-21T13:09:49.1202945Z"
+
+[[adrs]]
+id = "ADR-0010"
+path = ".mine/design/decisions/0010-persist-plan-branch-anchor-at-start.md"
+title = "Persist the Plan Branch Anchor at Start"
+status = "SUPERSEDED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph", ".mine/design/governance", ".mine/design/interfaces"]
+content_sha256 = "147A096D56803BAFF5863358B76A19FA35DAB642B5AA2AF76266762739B83C83"
+proposed_at = "2026-08-23T20:21:19.2248165Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-23T20:38:07.0613862Z"
+approval_note = "Repository owner replied “批准” to approve ADR-0010 and ADR-0011 in the current review turn."
+supersedes = []
+superseded_by = "ADR-0022"
+rejection_reason = ""
+updated_at = "2026-10-09T09:33:55.6391695Z"
+
+[[adrs]]
+id = "ADR-0011"
+path = ".mine/design/decisions/0011-reject-infeasible-in-progress-plans.md"
+title = "Reject Infeasible In-Progress Plans Without Faking Implementation"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph", ".mine/design/governance", ".mine/design/interfaces", ".mine/design/integrations"]
+content_sha256 = "9FF2E68836C8E95FC2728B83B3D54EA4711C8EED3B9396C557BB8B8590565C17"
+proposed_at = "2026-08-23T20:21:19.6038847Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-23T20:38:07.2970005Z"
+approval_note = "Repository owner replied “批准” to approve ADR-0010 and ADR-0011 in the current review turn."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-23T20:38:07.2970005Z"
+
+[[adrs]]
+id = "ADR-0012"
+path = ".mine/design/decisions/0012-withdraw-unstarted-plans.md"
+title = "Withdraw Unstarted Plans Through a WITHDRAWN Terminal State"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph", ".mine/design/governance", ".mine/design/interfaces", ".mine/design/integrations"]
+content_sha256 = "64121BBD36C317CA28F32EF9EE5DD3635BCA96828D7EB35BF5C81B196DAE92A4"
+proposed_at = "2026-08-30T20:34:20.8495582Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-30T20:40:09.6590715Z"
+approval_note = "Repository owner replied 全部批准 to approve ADR-0012 and ADR-0013 in the current review turn."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-30T20:40:09.6590715Z"
+
+[[adrs]]
+id = "ADR-0013"
+path = ".mine/design/decisions/0013-explicit-planning-scope-binding.md"
+title = "Persist an Explicit Planning Scope on Every Plan Node"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph", ".mine/design/governance", ".mine/design/interfaces", ".mine/design/integrations"]
+content_sha256 = "EB5F627941DD940305C1D9F8640800E0655E36EA1B4194D6863B41699F86081C"
+proposed_at = "2026-08-30T20:34:27.6063308Z"
+approved_by = "repository-owner"
+approved_at = "2026-08-30T20:40:10.0347801Z"
+approval_note = "Repository owner replied 全部批准 to approve ADR-0012 and ADR-0013 in the current review turn."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-08-30T20:40:10.0347801Z"
+
+[[adrs]]
+id = "ADR-0014"
+path = ".mine/design/decisions/0014-repair-unstarted-compensation-predecessors.md"
+title = "Repair Invalid Unstarted Compensation Predecessors Without Arbitrary Graph Editing"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph", ".mine/design/interfaces", ".mine/design/integrations"]
+content_sha256 = "E517EC6D14943D9DC69B6BA985902253F66871D4B84DBB9806F7FCDCA005AFD6"
+proposed_at = "2026-09-03T18:50:40.5557325Z"
+approved_by = "repository-owner"
+approved_at = "2026-09-03T18:55:48.1668616Z"
+approval_note = "Repository owner explicitly replied 批准 to approve ADR-0014 in the current session."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-09-03T18:55:48.1668616Z"
+
+[[adrs]]
+id = "ADR-0015"
+path = ".mine/design/decisions/0015-bounded-git-evidence-and-graph-operations.md"
+title = "Bounded Git Evidence and Graph Operations"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph/persistence-and-concurrency.md", ".mine/design/execution-graph/state-machine-and-algorithms.md"]
+content_sha256 = "91862FD9E905BA91CF19F1BE7E6A65B849CCBF1AD9AC3B612A5DAF7C3E3074F7"
+proposed_at = "2026-10-09T02:39:38.6357262Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:29.5613779Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:29.5613779Z"
+
+[[adrs]]
+id = "ADR-0016"
+path = ".mine/design/decisions/0016-semantic-ownership-and-generated-write-closure.md"
+title = "Semantic Ownership and Generated Write Closure"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph/domain-model.md", ".mine/design/integrations/skills.md", ".mine/design/governance/worktree-and-integration-lifecycle.md"]
+content_sha256 = "230B785E0D855480C5B5BB6116640E2312CB1C0433C40FA0C4D5F1CB83E09888"
+proposed_at = "2026-10-09T02:39:39.4961879Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:29.9712748Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:29.9712748Z"
+
+[[adrs]]
+id = "ADR-0017"
+path = ".mine/design/decisions/0017-architect-foundation-code-with-independent-review.md"
+title = "Architect Foundation Code With Independent Review"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/integrations/skills.md"]
+content_sha256 = "4D61F8AAD88801A354FF5AD348C1D3AE337EE8125B9D572B60A77C5F0C8F07F9"
+proposed_at = "2026-10-09T02:39:40.6881469Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:30.414042Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:30.414042Z"
+
+[[adrs]]
+id = "ADR-0018"
+path = ".mine/design/decisions/0018-effective-ownership-snapshot-and-atomic-start.md"
+title = "Effective Ownership Snapshot and Atomic Start"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/execution-graph/state-machine-and-algorithms.md", ".mine/design/execution-graph/domain-model.md", ".mine/design/governance/worktree-and-integration-lifecycle.md"]
+content_sha256 = "F1A372D8B17691CEB8CE92D92C30C4DFB95FAFA4ED8F9CF5AAAD2085523F3883"
+proposed_at = "2026-10-09T02:39:42.1295481Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:30.7902122Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:30.7902122Z"
+
+[[adrs]]
+id = "ADR-0019"
+path = ".mine/design/decisions/0019-recoverable-evidence-bound-lifecycle-closure.md"
+title = "Recoverable Evidence-Bound Lifecycle Closure"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/governance/worktree-and-integration-lifecycle.md", ".mine/design/governance/branch-and-plan-lifecycle.md", ".mine/design/execution-graph/persistence-and-concurrency.md"]
+content_sha256 = "9B2DEE2CD2DCB30E833CA9AFD10F00A1CCD3188BF02EDE368557079394FFBAF1"
+proposed_at = "2026-10-09T02:39:43.1401294Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:31.3209085Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:31.3209085Z"
+
+[[adrs]]
+id = "ADR-0020"
+path = ".mine/design/decisions/0020-input-bound-verification-evidence-reuse.md"
+title = "Input-Bound Verification Evidence Reuse"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/integrations/skills.md", ".mine/design/governance/worktree-and-integration-lifecycle.md"]
+content_sha256 = "E542E5D5559926D961B19A6FECE7ED54ECA3B398112E4B0C8818AE70BAB79B9F"
+proposed_at = "2026-10-09T02:39:44.1205753Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:31.8177215Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:31.8177215Z"
+
+[[adrs]]
+id = "ADR-0021"
+path = ".mine/design/decisions/0021-gated-release-and-verifiable-installation.md"
+title = "Gated Release and Verifiable Installation"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design/integrations/distribution.md", ".mine/design/governance/branch-and-plan-lifecycle.md"]
+content_sha256 = "23FD9FD718F2E511D22E31F62861984BDFFA5421372D6D1BF4629F20CB07CC46"
+proposed_at = "2026-10-09T02:39:45.2471506Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T04:16:32.3269499Z"
+approval_note = "Repository owner explicitly replied 全部批准 to approve ADR-0015 through ADR-0021 and their exact proposed digests in the current conversation."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T04:16:32.3269499Z"
+
+[[adrs]]
+id = "ADR-0022"
+path = ".mine/design/decisions/0022-durable-ready-preparation-and-root-graph-checkpoints.md"
+title = "Durable READY Preparation and Root Graph Checkpoints"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design"]
+content_sha256 = "A815DB369C2AE0DBBD848939DD4F49BD244079FFBC7338E0BFB883066CE2BB46"
+proposed_at = "2026-10-09T08:15:41.3897643Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-09T09:33:54.7556215Z"
+approval_note = "Repository owner explicitly replied 批准 to approve ADR-0022 and its exact proposed SHA-256 A815DB369C2AE0DBBD848939DD4F49BD244079FFBC7338E0BFB883066CE2BB46 in the current conversation."
+supersedes = ["ADR-0010"]
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-09T09:33:55.6391695Z"
+
+[[adrs]]
+id = "ADR-0023"
+path = ".mine/design/decisions/0023-mine-local-governance-layout.md"
+title = "Keep MINE Governance Files Under .mine"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = []
+content_sha256 = "6AF843730D6A765EB71B5D11C2EF5E05F260AAFA10C18025EE52869B087BFAFD"
+proposed_at = "2026-10-12T13:38:15.8366017Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-13T10:07:41.4261969Z"
+approval_note = "Repository owner explicitly replied 批准 on 2026-10-13 to approve ADR-0023 and proposed SHA-256 6AF843730D6A765EB71B5D11C2EF5E05F260AAFA10C18025EE52869B087BFAFD in this conversation."
+supersedes = ["ADR-0006", "ADR-0002"]
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-13T10:08:35.2811499Z"
+
+[[adrs]]
+id = "ADR-0024"
+path = ".mine/design/decisions/0024-project-registry-and-safe-deinit.md"
+title = "Project Registry and Safe Deinitialization"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "D5D3D18FE700C8ADF1FAD09C2D2F837FCAB86AFDB2BE1E6C81DA65DB79AFB2D8"
+proposed_at = "2026-10-16T09:20:41.0762677Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:12.4015781Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:12.4015781Z"
+
+[[adrs]]
+id = "ADR-0025"
+path = ".mine/design/decisions/0025-principal-roles-and-plan-handoffs.md"
+title = "Principal Roles and Traceable Plan Handoffs"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "47A1A3E419DC15E687583767E84E181B75478864FC94C54204CCED92A6C6484E"
+proposed_at = "2026-10-16T09:20:45.7224589Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:17.4599794Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:17.4599794Z"
+
+[[adrs]]
+id = "ADR-0026"
+path = ".mine/design/decisions/0026-sqlite-authority-and-recovery.md"
+title = "SQLite Authority, Migration and Durable Effects"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "28D69EA36ADEC209FF5A6C8829E36E8B50E1EACB68246CCFD5E70CFE4CAD2EF1"
+proposed_at = "2026-10-16T09:20:50.3715005Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:22.0122174Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:22.0122174Z"
+
+[[adrs]]
+id = "ADR-0027"
+path = ".mine/design/decisions/0027-durable-coordination-and-escalation.md"
+title = "Durable Commitments and Tiered Blocker Resolution"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "CA287AC652F1232BC42BFD820E67A0FC4E21C840CEED786FDCBFF1E1594ECCE5"
+proposed_at = "2026-10-16T09:20:54.7904949Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:26.6213094Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:26.6213094Z"
+
+[[adrs]]
+id = "ADR-0028"
+path = ".mine/design/decisions/0028-runtime-model-selection-and-recovery.md"
+title = "Provider Sessions, Model Selection and Recoverable Work Nodes"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "558BAD902831FD22796BE2EDCAC00A1CCA8DC439831C6330ECF7292F89E86367"
+proposed_at = "2026-10-16T09:20:59.3723182Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:31.8902347Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:31.8902347Z"
+
+[[adrs]]
+id = "ADR-0029"
+path = ".mine/design/decisions/0029-unified-local-project-dashboard.md"
+title = "Unified Local Dashboard and Consistent Decisions"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "6A118D5885834F4413FDE7BBA6663EBD82D184177EBEBA3A39ECB146A25021AC"
+proposed_at = "2026-10-16T09:21:03.9642786Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:36.9048827Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:36.9048827Z"
+
+[[adrs]]
+id = "ADR-0030"
+path = ".mine/design/decisions/0030-experimental-autonomy-policy.md"
+title = "Experimental Bounded Autonomy"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "F9E95E2CC9D329D91E9F8C7DBDC0FB3E543A7F48FA4CBA856AB7E0211B708A1F"
+proposed_at = "2026-10-16T09:21:08.5765117Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:41.7312774Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:41.7312774Z"
+
+[[adrs]]
+id = "ADR-0031"
+path = ".mine/design/decisions/0031-cross-project-resource-coordination.md"
+title = "Cross-Project Resource Arbitration and Temporary Channels"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "E66579EDC35CAB46862FBD6376CAD04B167A2CE62A4ABC464C2B3CC2A4E2A4CE"
+proposed_at = "2026-10-16T09:21:13.1466755Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T09:49:46.541327Z"
+approval_note = "Repository owner explicitly stated ADR全部批准 on 2026-10-16, approving ADR-0024 through ADR-0031 at the exact proposed digests in docs/design/v1/approval.md. Approval applies to the 1.0.0 target, not immediate implementation or 0.2.0 cutover."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T09:49:46.541327Z"
+
+[[adrs]]
+id = "ADR-0032"
+path = ".mine/design/decisions/0032-request-timing-and-bounded-observability.md"
+title = "Correlated Timing and Bounded Local Observability"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = ["v1.0.0"]
+content_sha256 = "AF7C150AF5774EF90EFACD91698A0A9AB2D89127C7A959CA15E37E232FBA2AB1"
+proposed_at = "2026-10-16T11:58:55.6171322Z"
+approved_by = "repository-owner"
+approved_at = "2026-10-16T15:12:32.0690933Z"
+approval_note = "Owner explicitly instructed approval of all ADRs in the current coordination request. This records approval of the already-proposed ADR-0032 digest AF7C150AF5774EF90EFACD91698A0A9AB2D89127C7A959CA15E37E232FBA2AB1 for v1.0.0, not implementation in 0.2.0."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-16T15:12:32.0690933Z"
+
+[[adrs]]
+id = "ADR-0033"
+path = ".mine/design/decisions/0033-checkpoint-aware-whole-command-performance-budget.md"
+title = "Checkpoint-aware whole-command performance budget"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design"]
+content_sha256 = "96DD2F9DB34F4982377B0E21798015F92C4F45799AD6F6CC0FF471D60DF89577"
+proposed_at = "2026-10-17T18:09:55.0668646Z"
+approved_by = "owner-delegated-coordinator"
+approved_at = "2026-10-17T18:10:12.4824572Z"
+approval_note = "Technical decision under the owner's explicit instruction to coordinate all remaining 0.2.0 work and resolve/approve technical ADRs without repeated owner prompts. Coordinator approves exact proposed digest 96DD2F9DB34F4982377B0E21798015F92C4F45799AD6F6CC0FF471D60DF89577; this is delegated approval, not a claim of personal owner review of this body. Requires specified reductions and independent verification; current 115-launch result remains failed."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-17T18:10:12.4824572Z"
+
+[[adrs]]
+id = "ADR-0034"
+path = ".mine/design/decisions/0034-defer-macos-delivery-until-dashboard-phase.md"
+title = "Defer macOS delivery until the dashboard phase"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design"]
+content_sha256 = "106319F5904C89A814A219DBE9F5654AEE695D02C1B6EEF5F5AF4CE0808B9F86"
+proposed_at = "2026-10-19T02:16:58.0681456Z"
+approved_by = "owner-delegated-coordinator"
+approved_at = "2026-10-19T02:17:19.0832692Z"
+approval_note = "Records owner's explicit 2026-10-19 instruction: defer macOS for 0.2.0 until dashboard phase. Coordinator binds this exact digest under existing technical ADR delegation; no claim of personally reviewed prose. Windows/Linux gates remain required; no GitHub CI or paid runner authority."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-19T02:17:19.0832692Z"
+
+[[adrs]]
+id = "ADR-0035"
+path = ".mine/design/decisions/0035-local-equivalent-v020-publication.md"
+title = "Local equivalent verification and publication for 0.2.0"
+status = "APPROVED"
+planning_blocking = true
+planning_scopes = [".mine/design"]
+content_sha256 = "BCB8934F879201F7EC19A9FEDAB6A3351597367B9DBAD86E61421BBF42C7432B"
+proposed_at = "2026-10-19T12:32:35.3287303Z"
+approved_by = "owner-delegated-coordinator"
+approved_at = "2026-10-19T12:32:49.3581633Z"
+approval_note = "Owner explicitly prohibited GitHub CI, requested actual 0.2.0 publication and delegated technical ADR decisions without repeated prompts. Coordinator approves exact proposed digest BCB8934F879201F7EC19A9FEDAB6A3351597367B9DBAD86E61421BBF42C7432B as a one-release execution-location exception, retaining every verification obligation; no claim of personal owner review of this body."
+supersedes = []
+superseded_by = ""
+rejection_reason = ""
+updated_at = "2026-10-19T12:32:49.3581633Z"

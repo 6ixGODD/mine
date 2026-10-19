@@ -6,7 +6,7 @@ use crate::application::design_service::DesignService;
 use crate::domain::adr::{AdrBlocker, AdrEntry, AdrRegistry, AdrStatus, sha256_hex};
 use crate::domain::config::MineConfig;
 use crate::domain::error::{MineError, MineResult};
-use crate::infrastructure::adr_store::{self, AdrStore};
+use crate::infrastructure::adr_store::AdrStore;
 
 /// Combined registry + Design readiness result.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -97,7 +97,7 @@ impl<'a> AdrService<'a> {
     pub fn validate(&self) -> MineResult<AdrRegistry> {
         let store = self.store();
         let registry = store.load()?;
-        let expected = adr_store::render_index(&registry)?;
+        let expected = store.render_index(&registry)?;
         let index_path = store.index_path();
         let stale = match std::fs::read(index_path) {
             Ok(bytes) => bytes != expected.as_bytes(),
@@ -172,7 +172,7 @@ impl<'a> AdrService<'a> {
     pub fn render_design_index(&self) -> MineResult<DesignIndexRender> {
         let store = self.store();
         let registry = store.load()?;
-        let rendered = adr_store::render_index(&registry)?;
+        let rendered = store.render_index(&registry)?;
         let index_path = store.index_path();
         let changed = match std::fs::read(index_path) {
             Ok(bytes) => bytes != rendered.as_bytes(),
@@ -221,7 +221,15 @@ impl<'a> AdrService<'a> {
             .ok_or_else(|| MineError::AdrNotFound {
                 adr_id: id.to_string(),
             })?;
-        let digest = sha256_hex(&std::fs::read(self.repo_root.join(&entry.path))?);
+        let bytes = std::fs::read(self.repo_root.join(&entry.path))?;
+        let relative =
+            crate::domain::graph::RepoPath::new(entry.path.clone()).map_err(|error| {
+                MineError::GraphInvalid {
+                    detail: error.to_string(),
+                }
+            })?;
+        crate::infrastructure::governance_git::freeze_body(self.repo_root, &relative, &bytes)?;
+        let digest = sha256_hex(&bytes);
         store.save_with_revision(expected, move |mut registry| {
             registry.propose(id, digest, now)?;
             registry.revision = expected + 1;
@@ -239,6 +247,10 @@ impl<'a> AdrService<'a> {
             .ok_or_else(|| MineError::AdrNotFound {
                 adr_id: id.to_string(),
             })?;
+        crate::infrastructure::governance_git::consume_bodies(
+            self.repo_root,
+            &[entry.path.as_str()],
+        )?;
         let digest = sha256_hex(&std::fs::read(self.repo_root.join(&entry.path))?);
         store.save_with_revision(expected, move |mut registry| {
             registry.approve(id, &digest, by, note, now)?;

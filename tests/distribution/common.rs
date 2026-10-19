@@ -32,7 +32,7 @@ pub const FIVE_SKILLS: &[&str] = &[
     "mine-sync",
 ];
 
-/// The eighteen accepted MCP tool names exposed by `mine mcp serve`.
+/// The nineteen accepted MCP tool names exposed by `mine mcp serve`.
 pub const ACCEPTED_MCP_TOOLS: &[&str] = &[
     "mine_workspace_status",
     "mine_graph_validate",
@@ -40,6 +40,8 @@ pub const ACCEPTED_MCP_TOOLS: &[&str] = &[
     "mine_graph_ready",
     "mine_graph_wave",
     "mine_plan_show",
+    "mine_graph_repair_provenance",
+    "mine_graph_repair_compensation_predecessors",
     "mine_design_validate",
     "mine_adr_show",
     "mine_adr_list",
@@ -104,13 +106,12 @@ fn walkdir(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Extracts candidate MCP tool-name tokens (`mine_<verb>_<noun>`) from text.
-/// Only tokens that match the accepted MCP tool surface are returned; this
-/// is used to verify Skills never reference a stale or invented MCP tool.
+/// Do not prefilter against the accepted set: that would silently hide the
+/// invented/stale tool this contract check is meant to detect.
 pub fn mcp_tool_refs(body: &str) -> Vec<&str> {
-    let accepted: std::collections::HashSet<&str> = ACCEPTED_MCP_TOOLS.iter().copied().collect();
     let mut out: Vec<&str> = body
         .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|t| t.starts_with("mine_") && t.len() > 6 && accepted.contains(t))
+        .filter(|t| t.starts_with("mine_") && t.len() > 6)
         .collect();
     out.sort();
     out.dedup();

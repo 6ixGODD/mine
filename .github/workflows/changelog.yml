@@ -1,6 +1,8 @@
 # Maintains CHANGELOG.md in the repository from Conventional Commits.
 #
-# Triggered on every `v*` tag push. Runs git-cliff against the full history,
+# Triggered on `v*` tags except the ADR-0035 local-only v0.2.0 release.
+# Its changelog is committed before acceptance, not written back after the tag.
+# Other releases run git-cliff against the full history,
 # writes/updates CHANGELOG.md at the repo root, and commits it back to the
 # stable branch. The GitHub Release body is built separately in release.yml
 # (same cliff.toml) so the release note = generated changelog + the hand-written
@@ -9,8 +11,7 @@ name: changelog
 
 on:
   push:
-    tags:
-      - "v*"
+    tags: ["v*", "!v0.2.0"]
   workflow_dispatch:
 
 permissions:

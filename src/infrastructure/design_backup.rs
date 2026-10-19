@@ -25,13 +25,15 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::config::MineConfig;
+use super::graph_snapshot::resolve_contained;
+use crate::domain::config::{GovernanceLayout, MineConfig};
 use crate::domain::design_marker::DesignMarker;
 use crate::domain::error::{MineError, MineResult};
+use crate::domain::graph::RepoPath;
 use crate::domain::ports::Clock;
 
 /// Backup directory prefix under the repository root.
-pub const BACKUP_PREFIX: &str = "docs/design-backup-";
+pub const BACKUP_PREFIX: &str = ".mine/runtime/design-backups/";
 
 /// The `.gitignore` written into every backup root so backups are never
 /// tracked or staged for release.
@@ -78,15 +80,23 @@ impl<'a> DesignBackup<'a> {
     pub fn backup(&self, repo_root: &Path, config: &MineConfig) -> MineResult<BackupOutcome> {
         // Validate ownership/marker before touching anything.
         let _marker = self.validate_marker(repo_root, config)?;
-        let design_root = repo_root.join("docs").join("design");
+        let layout = config.layout()?;
+        let design_root = resolve_contained(repo_root, layout.design_dir())?;
         let timestamp = self.compact_utc_timestamp();
         let backup_dir_name = format!("{BACKUP_PREFIX}{timestamp}");
-        let backup_path = repo_root.join(&backup_dir_name);
+        let relative =
+            RepoPath::new(backup_dir_name.clone()).map_err(|_| MineError::GraphInvalid {
+                detail: "backup clock produced an unsafe destination".into(),
+            })?;
+        let backup_path = resolve_contained(repo_root, &relative)?;
 
         // Copy the managed design tree without following external links. The
         // copy happens before writing the .gitignore so an early failure
         // leaves a removable partial directory rather than a stub.
-        std::fs::create_dir_all(&backup_path)?;
+        let backup_root = RepoPath::new(GovernanceLayout::BACKUP_DIR).expect("constant path");
+        std::fs::create_dir_all(resolve_contained(repo_root, &backup_root)?)?;
+        // A collision is not ours to overwrite or remove on copy failure.
+        std::fs::create_dir(&backup_path)?;
         let (file_count, total_bytes) =
             match self.copy_tree_repo_bound(&design_root, &backup_path, repo_root) {
                 Ok(stats) => stats,
@@ -113,15 +123,14 @@ impl<'a> DesignBackup<'a> {
     /// Loads and validates the design marker against the configured repository
     /// id. Marker must be MINE-managed and belong to this repository.
     fn validate_marker(&self, repo_root: &Path, config: &MineConfig) -> MineResult<DesignMarker> {
-        let marker_path = repo_root.join(&config.design.marker);
+        let layout = config.layout()?;
+        let marker_path = resolve_contained(repo_root, layout.design_marker())?;
         // An existing design root without a marker is an unmanaged namespace.
         // `mine init` resolves this by backing it up and creating a managed
         // root; this backup/validation path (used by mine-sync and design
         // backup) refuses to operate on a tree `mine init` has not claimed
         // (stable error, not an opaque I/O failure).
-        let design_dir = marker_path
-            .parent()
-            .unwrap_or_else(|| Path::new("docs/design"));
+        let design_dir = resolve_contained(repo_root, layout.design_dir())?;
         if design_dir.exists() && !marker_path.exists() {
             return Err(MineError::DesignNamespaceConflict {
                 path: design_dir.to_path_buf(),
@@ -129,15 +138,14 @@ impl<'a> DesignBackup<'a> {
         }
         let content = std::fs::read_to_string(&marker_path)?;
         let marker = DesignMarker::parse(&marker_path, &content)?;
-        if marker.managed_by != DesignMarker::MANAGED_BY {
-            return Err(MineError::DesignNamespaceConflict { path: marker_path });
-        }
-        if marker.repository_id != config.repository_id {
-            return Err(MineError::DesignOwnershipMismatch {
-                marker_id: marker.repository_id,
-                expected_id: config.repository_id.clone(),
-            });
-        }
+        crate::domain::design_marker::classify(
+            &design_dir,
+            &marker_path,
+            true,
+            true,
+            Some(&marker),
+            Some(&config.repository_id),
+        )?;
         Ok(marker)
     }
 
@@ -182,6 +190,24 @@ impl<'a> DesignBackup<'a> {
         total_bytes: &mut u64,
     ) -> MineResult<()> {
         let meta = std::fs::symlink_metadata(src)?;
+        let canonical = src.canonicalize()?;
+        if !canonical.starts_with(repo_root.canonicalize()?) {
+            return Err(MineError::Io(std::io::Error::other(
+                "design backup link escapes Root",
+            )));
+        }
+        #[cfg(windows)]
+        let linked = {
+            use std::os::windows::fs::MetadataExt;
+            meta.file_attributes() & 0x400 != 0
+        };
+        #[cfg(not(windows))]
+        let linked = meta.file_type().is_symlink();
+        if linked && canonical.is_dir() {
+            return Err(MineError::Io(std::io::Error::other(
+                "design backup refuses directory links/cycles",
+            )));
+        }
         if meta.is_dir() {
             std::fs::create_dir_all(dst)?;
             for entry in std::fs::read_dir(src)? {
@@ -195,6 +221,11 @@ impl<'a> DesignBackup<'a> {
             let bytes = std::fs::read(src)?;
             *total_bytes += bytes.len() as u64;
             std::fs::write(dst, &bytes)?;
+            if std::fs::read(dst)? != bytes || std::fs::read(src)? != bytes {
+                return Err(MineError::Io(std::io::Error::other(
+                    "design backup byte verification failed",
+                )));
+            }
             *file_count += 1;
         } else {
             // Symlink (or other special): refuse to follow if it escapes the
@@ -228,6 +259,11 @@ impl<'a> DesignBackup<'a> {
             let bytes = std::fs::read(&canonical_target)?;
             *total_bytes += bytes.len() as u64;
             std::fs::write(dst, &bytes)?;
+            if std::fs::read(dst)? != bytes || std::fs::read(&canonical_target)? != bytes {
+                return Err(MineError::Io(std::io::Error::other(
+                    "design backup byte verification failed",
+                )));
+            }
             *file_count += 1;
         }
         Ok(())
@@ -258,22 +294,22 @@ mod tests {
                 integration: "dev".to_string(),
             },
             design: DesignConfig {
-                root: "docs/design/index.md".to_string(),
-                marker: "docs/design/.mine-design.toml".to_string(),
+                root: ".mine/design/index.md".to_string(),
+                marker: ".mine/design/.mine-design.toml".to_string(),
                 language: "en".to_string(),
                 index_soft_limit_lines: 250,
                 leaf_soft_limit_lines: 400,
             },
             plan: PlanConfig {
-                root: "docs/plan".to_string(),
+                root: ".mine/plan".to_string(),
                 ephemeral: true,
                 purge_before_stable_release: true,
                 worktrees_root: ".mine/worktrees".to_string(),
                 shared_environment_root: ".".to_string(),
             },
             graph: GraphConfig {
-                source: "docs/plan/execution-graph.toml".to_string(),
-                rendered: "docs/plan/execution-graph.md".to_string(),
+                source: ".mine/plan/execution-graph.toml".to_string(),
+                rendered: ".mine/plan/execution-graph.md".to_string(),
                 lock_timeout_ms: 5000,
             },
             adr: crate::domain::config::AdrConfig::default(),
@@ -281,7 +317,7 @@ mod tests {
     }
 
     fn seed_managed_design(root: &Path, repo_id: &str) {
-        let design = root.join("docs").join("design");
+        let design = root.join(".mine").join("design");
         std::fs::create_dir_all(&design).unwrap();
         let marker = DesignMarker::new(repo_id.to_string(), "2026-07-23T00:00:00Z".to_string());
         std::fs::write(design.join(".mine-design.toml"), marker.to_toml()).unwrap();
@@ -303,7 +339,7 @@ mod tests {
         assert_eq!(outcome.timestamp, "20260723T193842Z");
         assert_eq!(
             outcome.backup_path_relative,
-            "docs/design-backup-20260723T193842Z"
+            ".mine/runtime/design-backups/20260723T193842Z"
         );
         let backup = &outcome.backup_path;
         // Copied files exist (nested included): 4 files (marker, index, area/index, area/leaf).
@@ -319,7 +355,7 @@ mod tests {
             "*\n"
         );
         // Source design unchanged.
-        assert!(root.path().join("docs/design/index.md").exists());
+        assert!(root.path().join(".mine/design/index.md").exists());
     }
 
     #[test]
@@ -338,7 +374,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let cfg = write_config(root.path(), "repo-1");
         // Create design dir without marker.
-        let design = root.path().join("docs").join("design");
+        let design = root.path().join(".mine").join("design");
         std::fs::create_dir_all(&design).unwrap();
         std::fs::write(design.join("index.md"), "x").unwrap();
         let err = DesignBackup::new(&FixedClock)
@@ -361,7 +397,7 @@ mod tests {
         // Drop an external target outside the repo and link to it from the design dir.
         let external = tempfile::tempdir().unwrap();
         std::fs::write(external.path().join("secret.txt"), "external secret").unwrap();
-        let link = root.path().join("docs").join("design").join("escape.link");
+        let link = root.path().join(".mine").join("design").join("escape.link");
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(external.path().join("secret.txt"), &link).unwrap();
@@ -391,7 +427,7 @@ mod tests {
         assert!(
             !root
                 .path()
-                .join("docs/design-backup-20260723T193842Z")
+                .join(".mine/runtime/design-backups/20260723T193842Z")
                 .exists(),
             "partial backup must be removed on failure"
         );

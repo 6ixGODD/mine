@@ -19,9 +19,14 @@ use mine::domain::validation;
 fn node(id: &str, hard: &[&str], excl: &[&str]) -> PlanNode {
     PlanNode {
         id: id.to_string(),
-        path: format!("docs/plan/{id}.md"),
+        path: format!("docs/plan/{id}-test.md"),
         title: format!("Plan {id}"),
-        branch: String::new(),
+        branch: mine::domain::plan_id::registered_plan_branch(
+            "validation-test",
+            id,
+            &format!("docs/plan/{id}-test.md"),
+        )
+        .unwrap(),
         branch_anchor: String::new(),
         status: PlanStatus::Blocked,
         hard_predecessors: hard.iter().map(|s| s.to_string()).collect(),
@@ -44,8 +49,19 @@ fn node(id: &str, hard: &[&str], excl: &[&str]) -> PlanNode {
         planning_scope: String::new(),
         readiness_checked_at: String::new(),
         adr_registry_revision: 0,
-        lineage_id: String::new(),
-        worktree_path: String::new(),
+        lineage_id: mine::domain::plan_id::CanonicalPlanId::parse(id)
+            .unwrap()
+            .lineage_id(),
+        worktree_path: mine::domain::plan_id::CanonicalPlanId::parse(id)
+            .unwrap()
+            .worktree_path(),
+        body_sha256: None,
+        ownership: None,
+        ownership_policy: None,
+        clarifications: vec![],
+        acceptance: None,
+        preparations: vec![],
+        started_preparation_generation: None,
     }
 }
 
@@ -54,7 +70,7 @@ fn workspace(plans: Vec<PlanNode>) -> PlanWorkspace {
         schema_version: mine::domain::graph::CURRENT_GRAPH_SCHEMA_VERSION,
         revision: 0,
         project_id: "test".to_string(),
-        workspace_id: "bootstrap-mine-v1".to_string(),
+        workspace_id: "validation-test".to_string(),
         stable_branch: "master".to_string(),
         integration_branch: "dev".to_string(),
         stable_baseline_commit: String::new(),
@@ -69,14 +85,18 @@ fn workspace(plans: Vec<PlanNode>) -> PlanWorkspace {
 
 #[test]
 fn full_lifecycle_transitions_allowed() -> Result<(), MineError> {
-    let mut n = node("01", &[], &["src/a/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let mut n = node("plan01", &[], &["src/a/"]);
     // READY -> IN_PROGRESS -> IMPLEMENTED -> ACCEPTED
     n.status = PlanStatus::Ready;
-    PlanStatus::Ready.validate_transition("01", PlanStatus::InProgress)?;
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    PlanStatus::Ready.validate_transition("plan01", PlanStatus::InProgress)?;
     n.status = PlanStatus::InProgress;
-    PlanStatus::InProgress.validate_transition("01", PlanStatus::Implemented)?;
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    PlanStatus::InProgress.validate_transition("plan01", PlanStatus::Implemented)?;
     n.status = PlanStatus::Implemented;
-    PlanStatus::Implemented.validate_transition("01", PlanStatus::Accepted)?;
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    PlanStatus::Implemented.validate_transition("plan01", PlanStatus::Accepted)?;
     Ok(())
 }
 
@@ -87,7 +107,8 @@ fn reject_path_requires_review_then_compensation() -> Result<(), MineError> {
     // downstream successors (mine plan rewire-compensation), NOT by a status
     // transition. The earlier REJECTED -> BLOCKED edge is removed as dead
     // historical baggage (no operation performs it).
-    PlanStatus::Implemented.validate_transition("01", PlanStatus::Rejected)?;
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    PlanStatus::Implemented.validate_transition("plan01", PlanStatus::Rejected)?;
     // REJECTED may NOT transition to BLOCKED, READY, or any other state.
     for target in [
         PlanStatus::Blocked,
@@ -99,7 +120,8 @@ fn reject_path_requires_review_then_compensation() -> Result<(), MineError> {
     ] {
         assert!(
             PlanStatus::Rejected
-                .validate_transition("01", target)
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                .validate_transition("plan01", target)
                 .is_err(),
             "REJECTED -> {target:?} must be rejected (terminal)"
         );
@@ -118,7 +140,8 @@ fn accepted_is_terminal_no_back_transition() -> Result<(), MineError> {
     ] {
         assert!(
             PlanStatus::Accepted
-                .validate_transition("01", target)
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                .validate_transition("plan01", target)
                 .is_err(),
             "ACCEPTED -> {target:?} must be rejected"
         );
@@ -130,10 +153,14 @@ fn accepted_is_terminal_no_back_transition() -> Result<(), MineError> {
 
 #[test]
 fn duplicate_plan_path_rejected() -> Result<(), MineError> {
-    // Same path as 01.
-    let mut dup = node("02", &[], &["src/b/"]);
-    dup.path = "docs/plan/01.md".to_string();
-    let g = workspace(vec![node("01", &[], &["src/a/"]), dup]);
+    // Same canonical path as the first node: exercise the duplicate-path gate,
+    // not an unrelated obsolete filename refusal.
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let mut dup = node("plan02", &[], &["src/b/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let first = node("plan01", &[], &["src/a/"]);
+    dup.path.clone_from(&first.path);
+    let g = workspace(vec![first, dup]);
     let err = validation::validate(&g).unwrap_err();
     assert_eq!(err.code(), "MINE_GRAPH_INVALID");
     Ok(())
@@ -142,29 +169,42 @@ fn duplicate_plan_path_rejected() -> Result<(), MineError> {
 #[test]
 fn diamond_dependency_validates_and_topologizes() -> Result<(), MineError> {
     let g = workspace(vec![
-        node("01", &[], &["src/a/"]),
-        node("02", &["01"], &["src/b/"]),
-        node("03", &["01"], &["src/c/"]),
-        node("04", &["02", "03"], &["src/d/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan01", &[], &["src/a/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan02", &["plan01"], &["src/b/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan03", &["plan01"], &["src/c/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan04", &["plan02", "plan03"], &["src/d/"]),
     ]);
     validation::validate(&g)?;
     let order = validation::topological_sort(&g)?;
-    assert_eq!(order.first(), Some(&"01".to_string()));
-    assert_eq!(order.last(), Some(&"04".to_string()));
-    assert!(order.iter().position(|x| x == "02") < order.iter().position(|x| x == "04"));
-    assert!(order.iter().position(|x| x == "03") < order.iter().position(|x| x == "04"));
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    assert_eq!(order.first(), Some(&"plan01".to_string()));
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    assert_eq!(order.last(), Some(&"plan04".to_string()));
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    assert!(order.iter().position(|x| x == "plan02") < order.iter().position(|x| x == "plan04"));
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    assert!(order.iter().position(|x| x == "plan03") < order.iter().position(|x| x == "plan04"));
     Ok(())
 }
 
 #[test]
 fn parallel_wave_picks_disjoint_ready_set() -> Result<(), MineError> {
-    let mut p01 = node("01", &[], &["src/a/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let mut p01 = node("plan01", &[], &["src/a/"]);
     p01.status = PlanStatus::Accepted;
+    p01.branch_anchor = "pure-domain-anchor".into();
     let mut g = workspace(vec![
         p01,
-        node("02", &["01"], &["src/b/"]),
-        node("03", &["01"], &["src/c/"]),
-        node("04", &["01"], &["src/d/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan02", &["plan01"], &["src/b/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan03", &["plan01"], &["src/c/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan04", &["plan01"], &["src/d/"]),
     ]);
     // All hard predecessors (01) accepted; mark 02/03/04 READY.
     g.plans
@@ -180,13 +220,18 @@ fn parallel_wave_picks_disjoint_ready_set() -> Result<(), MineError> {
 
 #[test]
 fn parallel_wave_excludes_write_overlap() -> Result<(), MineError> {
-    let mut p01 = node("01", &[], &["src/a/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let mut p01 = node("plan01", &[], &["src/a/"]);
     p01.status = PlanStatus::Accepted;
+    p01.branch_anchor = "pure-domain-anchor".into();
     let mut g = workspace(vec![
         p01,
-        node("02", &["01"], &["src/shared/"]),
-        node("03", &["01"], &["src/shared/x.rs"]),
-        node("04", &["01"], &["src/other/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan02", &["plan01"], &["src/shared/"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan03", &["plan01"], &["src/shared/x.rs"]),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        node("plan04", &["plan01"], &["src/other/"]),
     ]);
     // Make exclusive scopes disjoint for validation, then force an overlap
     // for the wave via reserved shared paths on 02 and 03.
@@ -201,9 +246,11 @@ fn parallel_wave_excludes_write_overlap() -> Result<(), MineError> {
     let wave = validation::parallel_wave(&g);
     // 02 and 03 share the reserved path; only one of them plus 04 can be in
     // the wave.
-    assert!(wave.contains(&"04".to_string()));
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    assert!(wave.contains(&"plan04".to_string()));
     assert!(
-        wave.contains(&"02".to_string()) ^ wave.contains(&"03".to_string()),
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        wave.contains(&"plan02".to_string()) ^ wave.contains(&"plan03".to_string()),
         "wave was {wave:?}"
     );
     Ok(())
@@ -211,7 +258,8 @@ fn parallel_wave_excludes_write_overlap() -> Result<(), MineError> {
 
 #[test]
 fn empty_design_references_rejected() -> Result<(), MineError> {
-    let mut n = node("01", &[], &["src/a/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let mut n = node("plan01", &[], &["src/a/"]);
     n.design_references = vec![];
     let g = workspace(vec![n]);
     let err = validation::validate(&g).unwrap_err();
@@ -221,7 +269,8 @@ fn empty_design_references_rejected() -> Result<(), MineError> {
 
 #[test]
 fn unsafe_owned_path_rejected() -> Result<(), MineError> {
-    let n = node("01", &[], &["../escape/"]);
+    // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+    let n = node("plan01", &[], &["../escape/"]);
     let g = workspace(vec![n]);
     let err = validation::validate(&g).unwrap_err();
     assert_eq!(err.code(), "MINE_GRAPH_INVALID");

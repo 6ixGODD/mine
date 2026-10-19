@@ -10,9 +10,81 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Malformed internal contract input. Never includes input values or secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("{field}: {reason}")]
+pub struct ContractError {
+    pub field: &'static str,
+    pub reason: &'static str,
+}
+
+impl ContractError {
+    pub const fn new(field: &'static str, reason: &'static str) -> Self {
+        Self { field, reason }
+    }
+}
+
+pub type ContractResult<T> = Result<T, ContractError>;
+
+pub(crate) fn contract_text(field: &'static str, value: &str) -> ContractResult<()> {
+    if value.is_empty() || value.trim() != value || value.chars().any(char::is_control) {
+        return Err(ContractError::new(
+            field,
+            "expected nonempty trimmed text without controls",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn contract_version(version: u32) -> ContractResult<()> {
+    if version != 1 {
+        return Err(ContractError::new(
+            "schema_version",
+            "unsupported contract version; expected 1",
+        ));
+    }
+    Ok(())
+}
+
+/// Bounded Git failures retain a typed cause inside the existing MINE_IO
+/// envelope (exit 6); neither argv nor potentially secret child output is logged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum GitFailure {
+    #[error("Git child deadline exceeded")]
+    ChildDeadline,
+    #[error("Git request budget exhausted")]
+    RequestBudget,
+    #[error("Git request cancelled")]
+    Cancelled,
+    #[error("Git captured stream limit exceeded")]
+    OutputLimit,
+    #[error("Git input or limits are invalid")]
+    InvalidInput,
+    #[error("Git process or pipe I/O failed")]
+    ProcessIo,
+    #[error("Git child returned failure")]
+    ChildExit,
+    #[error("Git evidence protocol or object identity is invalid")]
+    Protocol,
+}
+
+impl From<GitFailure> for MineError {
+    fn from(value: GitFailure) -> Self {
+        Self::Io(std::io::Error::other(value))
+    }
+}
+
 /// A MINE domain error carrying a stable machine-readable code.
 #[derive(Debug, Error)]
 pub enum MineError {
+    /// A native intent persisted but its exact checkpoint outcome needs recovery.
+    /// This can precede graph publication; it is never described as rollback.
+    #[error("operation {id} remains pending: {detail}",id=.operation.fields().operation_id.as_str())]
+    GraphCheckpointPending {
+        operation: Box<crate::domain::lifecycle_operation::LifecycleOperation>,
+        revision_after: Option<u64>,
+        detail: String,
+    },
     /// The repository root could not be discovered.
     #[error("repository not found: {detail}")]
     RepositoryNotFound { detail: String },
@@ -22,7 +94,7 @@ pub enum MineError {
     /// legacy directory aside to a timestamped backup and creating a fresh
     /// managed root; other operations (e.g. `mine-sync`) report this error to
     /// refuse operating on a tree `mine init` has not claimed.
-    #[error("design namespace conflict at {path}: existing docs/design is not MINE-managed")]
+    #[error("design namespace conflict at {path}: existing Design directory is not MINE-managed")]
     DesignNamespaceConflict { path: PathBuf },
 
     /// The design marker belongs to a different repository identifier than the
@@ -60,6 +132,14 @@ pub enum MineError {
     /// The execution graph failed structural validation.
     #[error("execution graph is invalid: {detail}")]
     GraphInvalid { detail: String },
+
+    /// TOML committed; deterministic view requires repair, not retry/rollback.
+    #[error("graph committed at revision {revision_after}; {detail}")]
+    GraphCommitted {
+        revision_before: u64,
+        revision_after: u64,
+        detail: String,
+    },
 
     /// The execution graph contains a cycle in hard dependencies.
     #[error("execution graph contains a cycle: {cycle}")]
@@ -221,6 +301,7 @@ impl MineError {
     #[must_use]
     pub fn code(&self) -> &'static str {
         match self {
+            Self::GraphCheckpointPending { .. } => "MINE_GRAPH_CHECKPOINT_PENDING",
             Self::RepositoryNotFound { .. } => "MINE_REPOSITORY_NOT_FOUND",
             Self::DesignNamespaceConflict { .. } => "MINE_DESIGN_NAMESPACE_CONFLICT",
             Self::DesignOwnershipMismatch { .. } => "MINE_DESIGN_OWNERSHIP_MISMATCH",
@@ -229,6 +310,7 @@ impl MineError {
             Self::ConfigInvalid { .. } => "MINE_CONFIG_INVALID",
             Self::GraphNotInitialized { .. } => "MINE_GRAPH_NOT_INITIALIZED",
             Self::GraphInvalid { .. } => "MINE_GRAPH_INVALID",
+            Self::GraphCommitted { .. } => "MINE_GRAPH_COMMITTED_REPAIR_NEEDED",
             Self::GraphCycle { .. } => "MINE_GRAPH_CYCLE",
             Self::PlanNotFound { .. } => "MINE_PLAN_NOT_FOUND",
             Self::InvalidPlanIdentity { .. } => "MINE_PLAN_ID_INVALID",

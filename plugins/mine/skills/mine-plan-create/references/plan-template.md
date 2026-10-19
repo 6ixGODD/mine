@@ -9,12 +9,12 @@
 
 ## Canonical Plan identity
 - ID: `planNN(?:-NN)*(?:-CNN)?`
-- Filename: `docs/plan/<id>-<lower-kebab-slug>.md`
+- Filename: `.mine/plan/<id>-<lower-kebab-slug>.md`
 - Lineage/worktree identity: derive from the typed Plan-ID contract; do not
   duplicate parsing or compensation-number logic in the Plan.
 
 ## Governing design references
-- `docs/design/<area>/<leaf>.md#<anchor>` (cite exact design leaves and anchors under `docs/design/` — progressive disclosure rooted at `docs/design/index.md`; MINE owns `docs/design/`)
+- `.mine/design/<area>/<leaf>.md#<anchor>` (cite exact design leaves and anchors under `.mine/design/` — progressive disclosure rooted at `.mine/design/index.md`; MINE owns `.mine/design/`)
 
 ## Requirements traceability
 | Requirement | Design leaf/anchor | Work package | Acceptance evidence |
@@ -38,6 +38,16 @@
 ### Non-goals
 ### Historical baggage to remove
 
+## Responsibility and immutable/effective authority
+- Namespace/responsibility, supported behavior and explicit exclusions:
+- Real entry point -> producer -> consumer and invariant:
+- Physical mapping for navigation/admission (not a frozen internal file inventory):
+- Shared declarations/integration owner; excluded algorithms/schema/migrations/locks:
+- Generator transaction: inputs -> complete owned outputs -> seal/join gates:
+- Conservative nonempty mapping, or actual approved policy/ADR byte binding:
+- Original Plan/body digest and declarations; approved clarification tail if any:
+- Material decisions requiring owner ADR approval rather than local autonomy:
+
 ## Dependency and parallelism graph
 ```mermaid
 flowchart LR
@@ -51,7 +61,7 @@ flowchart LR
 ### WP1 — Name
 - Purpose:
 - Inputs and predecessors:
-- Exact files/symbols/contracts:
+- Responsibility/contract and initial physical locations (internal file splits are autonomous within authority):
 - Current behavior:
 - Required final behavior:
 - Input/output/error/lifecycle semantics:
@@ -64,6 +74,15 @@ flowchart LR
 - Narrow verification commands and expected evidence:
 - Downstream artifact:
 - Suggested commit:
+
+## Native admission and recoverable progress
+- Observed authoritative Root revision and complete held/selected owner snapshot:
+- Actual CLI/MCP contract and installed version, not unshipped bootstrap commands:
+- Explicit prepare actor/operation identity, generation and checkpoint completion:
+- Start admission and same-operation query/resume after unknown results:
+- Root integration branch; registered linked worktree and stopped compensation lineage:
+- Own inputs/report committed before graph writes; no manual checkpoint fast-forward:
+- Acceptance requires exact reviewed merge, actual integration gates and safe cleanup:
 
 ## Mutable output ownership
 
@@ -83,15 +102,22 @@ the estimate and pause for explicit owner agreement before relaxing isolation.
 | Scope | Command | Preconditions | Expected evidence | Owner |
 |---|---|---|---|---|
 
+Record RUN/REUSED/INVALIDATED/NON_REUSABLE/NOT_RUN separately, with exact inputs,
+command, policy, tools/environment/platform/features and artifact identities.
+Reuse applicable existing evidence without duplicate runs; independent/native
+requirements and changed inputs still need their actual probes. Resource absence,
+warnings, nonzero exits and an exit0 invalidation are never green evidence.
+
 ## Acceptance checklist
 - [ ] Every requirement is traced to architecture, implementation, and evidence.
 - [ ] Every registered source was opened and understood by executors/reviewer.
-- [ ] Parallel write scopes are disjoint and shared files have one owner.
+- [ ] Held and selected owners are checked by native admission; approved semantic partition/shared-entry rules justify any physical overlap.
+- [ ] Whole generators/shared mutable outputs have one owner and complete gate closure.
 - [ ] Required quality gates pass or failures are accurately recorded.
 - [ ] Obsolete implementation is removed or explicitly scheduled for removal.
 - [ ] No unapproved external mutation occurred.
 
 ## Report path
-`docs/plan/reports/<plan-name>-implementation.md`
+`.mine/plan/reports/<plan-name>-implementation.md`
 
 ## Suggested commits

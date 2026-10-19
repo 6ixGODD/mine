@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/6ixGODD/mine-is-not-everyones/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://github.com/6ixGODD/mine/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"></a>
   <img src="https://img.shields.io/badge/rust-1.85%2B-orange.svg" alt="Rust 1.85+">
   <img src="https://img.shields.io/badge/agents-Claude%20Code%20%7C%20Codex%20%7C%20Pi%20%7C%20OpenCode-6a5acd.svg" alt="Supported agents">
 </p>
@@ -26,8 +26,8 @@ MINE addresses this by **persisting engineering state in the repository and usin
 
 Specifically:
 
-- `docs/design/` stores the currently accepted engineering design;
-- `docs/plan/` stores execution plans for the current development cycle;
+- `.mine/design/` stores the currently accepted engineering design;
+- `.mine/plan/` stores execution plans for the current development cycle;
 - the Execution Graph manages dependencies and execution state between Plans;
 - Git branches and worktrees isolate implementations of different Plans;
 - independent Review determines whether an implementation can be accepted;
@@ -76,6 +76,11 @@ In normal use, you do not need to manually manage graph revisions, report paths,
 
 ## Installation
 
+0.2.0 delivery targets **Windows x86_64 and Linux x86_64**. macOS delivery is
+**DEFERRED until the dashboard phase**; there is no macOS 0.2.0 archive. Existing
+macOS implementation/history is preserved, not counted as a native verification pass.
+Claude Code, Codex, Pi and OpenCode integrations remain supported.
+
 ### Recommended installation
 
 Install the `mine` binary.
@@ -85,15 +90,15 @@ Install the `mine` binary.
 Run in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-#### macOS / Linux
+#### Linux x86_64
 
 Run in your terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh | sh
 ```
 
 After installation, restart your terminal and verify that MINE is available:
@@ -120,23 +125,23 @@ mine agent status
 
 The bootstrap installer uses the latest Release by default. Set `MINE_REF` to install a specific version.
 
-For example, to install `v0.1.4`:
+For example, to install `v0.2.0`:
 
 #### Windows
 
 ```powershell
-$env:MINE_REF = "v0.1.4"
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+$env:MINE_REF = "v0.2.0"
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-#### macOS / Linux
+#### Linux x86_64
 
 ```sh
-MINE_REF=v0.1.4 \
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh)"
+MINE_REF=v0.2.0 \
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh)"
 ```
 
-`MINE_REF` identifies the Git tag to install, for example `v0.1.4`.
+`MINE_REF` identifies the Git tag to install, for example `v0.2.0`.
 
 ### Agent integrations
 
@@ -158,7 +163,7 @@ Pi's minimal core does not include MCP support. MINE does not require users to i
 Claude Code users may also install the MINE Skills through Marketplace:
 
 ```text
-/plugin marketplace add 6ixGODD/mine-is-not-everyones
+/plugin marketplace add 6ixGODD/mine
 /plugin install mine@mine-is-not-everyones
 ```
 
@@ -185,6 +190,23 @@ mine setup
 </details>
 
 ## Getting Started
+
+In 0.2.0, fresh governance uses `.mine/design/` and `.mine/plan/`; user `docs/`
+is untouched. Do not point a new binary at an active legacy layout and rewrite
+its configuration: finish using its existing binary, then perform the separately
+authorized, source-bound terminal cutover. Root stays on `dev` while Plans are
+open; Plan branches run only in registered linked worktrees under `.mine/worktrees/`.
+
+Plans declare responsibility/namespaces, exclusions and physical mappings, not a
+permission request for every internal file. Native start checks all held owners,
+not just READY nodes. Review independently integrates the exact accepted tip and
+removes its clean merged worktree/branch before acceptance; rejection preserves
+the lineage for its next sibling compensation. Mutable build/test/generated output
+is isolated per exact Plan node across all languages, while environments are reused.
+
+Native checkpoints and operation IDs make lost responses recoverable without
+duplicate work. Input-bound receipts reuse unchanged applicable verification;
+changed inputs and required independent/native probes still need real evidence.
 
 Initialize MINE once from the root of a Git repository:
 
@@ -272,9 +294,9 @@ Each Plan defines its dependencies, write scope, and acceptance criteria. When s
 
 ```text
 dev
-├── plan/01-api       → worktree A
-├── plan/02-storage   → worktree B
-└── plan/03-ui        → worktree C
+├── plan/plan01-api       → worktree A
+├── plan/plan02-storage   → worktree B
+└── plan/plan03-ui        → worktree C
 ```
 
 The Execution Graph determines which Plans have satisfied their predecessors and may begin execution.
@@ -291,7 +313,7 @@ Once all Plans are complete and accepted, synchronize the final Design:
 mine-sync prepare this repository for stable release
 ```
 
-This final `mine-sync` reconciles the persistent Design with the final implementation so that `docs/design/` accurately reflects the product state that will remain after release.
+This final `mine-sync` reconciles the persistent Design with the final implementation so that `.mine/design/` accurately reflects the product state that will remain after release.
 
 Then perform local Release Closure:
 
@@ -305,7 +327,7 @@ Release Closure performs the following work:
 - checks the Execution Graph and release gates;
 - constructs and validates the stable candidate;
 - checks the stable tree for temporary Plan references from the current development cycle;
-- removes temporary development state such as `docs/plan/`;
+- removes temporary development state such as `.mine/plan/`;
 - integrates the final result into stable;
 - cleans up MINE-managed local development branches.
 
@@ -317,7 +339,7 @@ The stable branch retains:
 
 ```text
 product code
-docs/design/
+.mine/design/
 user documentation
 other files required by the product
 ```
@@ -325,7 +347,7 @@ other files required by the product
 The following development-time state does not enter the stable release:
 
 ```text
-docs/plan/
+.mine/plan/
 execution graph
 implementation / review reports
 dev
@@ -369,7 +391,7 @@ The deciding question is not **which file changed**, but **whether the engineeri
 - [User Guide](docs/user-guide.md) — practical, step-by-step use of MINE
 - [Core Concepts](docs/concepts.md) — Design, Plans, the Execution Graph, Review, and stable state
 
-MINE's own internal architecture and implementation contracts are documented in the [Design index](docs/design/index.md).
+Locate MINE's own internal Design through [repository configuration](.mine/config.toml). Fresh 0.2.0 projects use `.mine/design/index.md`; an active legacy source keeps its configured paths until authorized terminal cutover.
 
 ## Project Status
 

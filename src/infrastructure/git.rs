@@ -20,9 +20,11 @@
 //! temporary repository.
 
 use std::path::{Path, PathBuf};
+#[cfg(test)]
 use std::process::Command;
 
 use crate::domain::error::{MineError, MineResult};
+use crate::infrastructure::git_evidence::GitRequest;
 
 /// One stable `git worktree list --porcelain -z` record.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -37,42 +39,17 @@ pub struct WorktreeInfo {
 }
 
 /// The git executable. Resolved from `PATH` (never via a shell).
+#[cfg(test)]
 const GIT: &str = "git";
 
 /// Runs a read-only `git` command in `repo_root` with the given args and
 /// returns the trimmed stdout on success.
 fn run_git(repo_root: &Path, args: &[&str]) -> MineResult<String> {
-    let output = Command::new(GIT)
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(MineError::Io(std::io::Error::other(format!(
-            "git {} failed: {stderr}",
-            args.join(" ")
-        ))));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    GitRequest::new(repo_root).text(args)
 }
 
 fn run_git_bytes(repo_root: &Path, args: &[&str]) -> MineResult<Vec<u8>> {
-    let output = Command::new(GIT)
-        .arg("-C")
-        .arg(repo_root)
-        .args(args)
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(MineError::Io(std::io::Error::other(format!(
-            "git {} failed: {stderr}",
-            args.join(" ")
-        ))));
-    }
-    Ok(output.stdout)
+    GitRequest::new(repo_root).run(args, &[])
 }
 
 fn run_git_mutation(repo_root: &Path, args: &[&str]) -> MineResult<()> {
@@ -119,7 +96,10 @@ pub fn delete_branch(repo_root: &Path, branch: &str, force: bool) -> MineResult<
 /// Parses Git's stable NUL-delimited worktree inventory. The first record is
 /// the main worktree and therefore the authoritative MINE integration root.
 pub fn list_worktrees(repo_root: &Path) -> MineResult<Vec<WorktreeInfo>> {
-    let bytes = run_git_bytes(repo_root, &["worktree", "list", "--porcelain", "-z"])?;
+    GitRequest::new(repo_root).worktrees()
+}
+
+pub(crate) fn parse_worktrees(bytes: &[u8]) -> MineResult<Vec<WorktreeInfo>> {
     let mut records = Vec::new();
     let mut current: Option<WorktreeInfo> = None;
     for token in bytes.split(|byte| *byte == 0) {
@@ -129,7 +109,8 @@ pub fn list_worktrees(repo_root: &Path) -> MineResult<Vec<WorktreeInfo>> {
             }
             continue;
         }
-        let line = String::from_utf8_lossy(token);
+        let line =
+            std::str::from_utf8(token).map_err(|_| crate::domain::error::GitFailure::Protocol)?;
         if let Some(path) = line.strip_prefix("worktree ") {
             if let Some(record) = current.take() {
                 records.push(record);
@@ -199,9 +180,10 @@ pub fn current_branch(repo_root: &Path) -> MineResult<Option<String>> {
 /// Returns the full `HEAD` commit hash, or `None` if unavailable (e.g. an
 /// unborn branch with no commits).
 pub fn head_commit(repo_root: &Path) -> Option<String> {
-    run_git(repo_root, &["rev-parse", "HEAD"])
-        .ok()
-        .filter(|s| !s.is_empty())
+    let mut request = GitRequest::new(repo_root);
+    let head = request.text(&["rev-parse", "HEAD"]).ok()?;
+    request.validate_commits(std::slice::from_ref(&head)).ok()?;
+    Some(head)
 }
 
 /// Returns `true` if the working tree has no uncommitted or untracked changes.
@@ -215,20 +197,9 @@ pub fn is_clean(repo_root: &Path) -> bool {
 /// `git ls-files -z`. Returns an error when Git cannot be invoked (fail
 /// closed for release gates).
 pub fn list_tracked_files(repo_root: &Path) -> MineResult<Vec<String>> {
-    let output = Command::new(GIT)
-        .arg("-C")
-        .arg(repo_root)
-        .args(["ls-files", "-z"])
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        return Err(MineError::Io(std::io::Error::other(format!(
-            "git ls-files failed: {stderr}"
-        ))));
-    }
+    let output = run_git_bytes(repo_root, &["ls-files", "-z"])?;
     let mut files = Vec::new();
-    for chunk in output.stdout.split(|b| *b == 0) {
+    for chunk in output.split(|b| *b == 0) {
         if chunk.is_empty() {
             continue;
         }
@@ -285,19 +256,12 @@ pub fn is_ancestor(repo_root: &Path, ancestor: &str, descendant: &str) -> bool {
 /// Checks ancestry while preserving the distinction between a false relation
 /// and a Git invocation/object failure.
 pub fn is_ancestor_checked(repo_root: &Path, ancestor: &str, descendant: &str) -> MineResult<bool> {
-    let output = Command::new(GIT)
-        .arg("-C")
-        .arg(repo_root)
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .output()
-        .map_err(|e| MineError::Io(std::io::Error::other(format!("git invoke failed: {e}"))))?;
+    let output = GitRequest::new(repo_root)
+        .run_raw(&["merge-base", "--is-ancestor", ancestor, descendant], &[])?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        code => Err(MineError::Io(std::io::Error::other(format!(
-            "git merge-base --is-ancestor failed with status {code:?}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))),
+        _ => Err(crate::domain::error::GitFailure::ChildExit.into()),
     }
 }
 
@@ -384,6 +348,20 @@ mod tests {
             .args(["config", "user.name", "test"])
             .status()
             .unwrap();
+        // These evidence/branch fixtures do not test EOL conversion or signing.
+        // Own their local policy instead of inheriting the host's CRLF/signers.
+        for (key, value) in [("core.autocrlf", "false"), ("commit.gpgSign", "false")] {
+            assert!(
+                Command::new(GIT)
+                    .arg("-C")
+                    .arg(dir)
+                    .args(["config", key, value])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "private fixture policy {key}"
+            );
+        }
         std::fs::write(dir.join("README.md"), "hi\n").unwrap();
         Command::new(GIT)
             .arg("-C")

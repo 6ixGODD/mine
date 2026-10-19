@@ -1,0 +1,561 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ContractSchema",
+  "description": "Root for schema generation; not a network request or a duplicated state store.",
+  "type": "object",
+  "properties": {
+    "command": {
+      "$ref": "#/$defs/CommandMeta"
+    },
+    "control_command": {
+      "$ref": "#/$defs/ControlCommandMeta"
+    },
+    "discovery": {
+      "$ref": "#/$defs/Discovery"
+    },
+    "effect_outcome": {
+      "$ref": "#/$defs/EffectOutcome"
+    },
+    "error": {
+      "$ref": "#/$defs/ErrorCode"
+    },
+    "frontier": {
+      "$ref": "#/$defs/FrontierSnapshot"
+    },
+    "message_kind": {
+      "$ref": "#/$defs/MessageKind"
+    },
+    "observed_value": {
+      "$ref": "#/$defs/ObservedValue"
+    },
+    "receipt": {
+      "$ref": "#/$defs/CommitReceipt"
+    },
+    "role": {
+      "$ref": "#/$defs/Role"
+    },
+    "selection": {
+      "$ref": "#/$defs/Selection"
+    }
+  },
+  "required": [
+    "command",
+    "control_command",
+    "receipt",
+    "selection",
+    "discovery",
+    "frontier",
+    "observed_value",
+    "error",
+    "role",
+    "message_kind",
+    "effect_outcome"
+  ],
+  "$defs": {
+    "AssignmentEpoch": {
+      "description": "Canonical decimal 0..9223372036854775807; consumers additionally enforce this numeric bound.",
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "Choices": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "supported"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unsupported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "CommandMeta": {
+      "type": "object",
+      "properties": {
+        "assignment_epoch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AssignmentEpoch"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expected_revision": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "project_id",
+        "expected_revision",
+        "input_digest"
+      ]
+    },
+    "CommitDisposition": {
+      "type": "string",
+      "enum": [
+        "applied",
+        "replayed"
+      ]
+    },
+    "CommitReceipt": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "$ref": "#/$defs/EventCursor"
+        },
+        "disposition": {
+          "$ref": "#/$defs/CommitDisposition"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "revision": {
+          "$ref": "#/$defs/EntityRevision"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "disposition",
+        "revision",
+        "cursor"
+      ]
+    },
+    "ControlCommandMeta": {
+      "description": "Global commands (including first registration) must not invent a Project ID.",
+      "type": "object",
+      "properties": {
+        "expected_revision": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "input_digest": {
+          "$ref": "#/$defs/Digest"
+        },
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "expected_revision",
+        "input_digest"
+      ]
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "Discovery": {
+      "type": "object",
+      "properties": {
+        "config_fingerprint": {
+          "$ref": "#/$defs/Digest"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelCapability"
+          }
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "runtime_version": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/SnapshotId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "snapshot_id",
+        "provider",
+        "runtime_version",
+        "config_fingerprint",
+        "models"
+      ]
+    },
+    "EffectOutcome": {
+      "type": "string",
+      "enum": [
+        "not_sent",
+        "rejected",
+        "accepted",
+        "unknown"
+      ]
+    },
+    "EntityRevision": {
+      "description": "Canonical decimal 0..9223372036854775807; consumers additionally enforce this numeric bound.",
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "invalid_input",
+        "unauthenticated",
+        "forbidden",
+        "not_found",
+        "revision_conflict",
+        "stale_epoch",
+        "idempotency_conflict",
+        "busy",
+        "pending",
+        "outcome_unknown",
+        "corrupt_store",
+        "version_unsupported",
+        "io_failure",
+        "capability_stale",
+        "selection_unsupported"
+      ]
+    },
+    "EventCursor": {
+      "description": "Canonical decimal 0..9223372036854775807; consumers additionally enforce this numeric bound.",
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "FrontierNode": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/WorkNodeId"
+        },
+        "next_action": {
+          "type": "string"
+        },
+        "owner": {
+          "$ref": "#/$defs/PrincipalId"
+        },
+        "state": {
+          "$ref": "#/$defs/WorkState"
+        },
+        "title": {
+          "type": "string"
+        },
+        "waiting_on": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PrincipalId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "state",
+        "owner",
+        "next_action"
+      ]
+    },
+    "FrontierSnapshot": {
+      "type": "object",
+      "properties": {
+        "cursor": {
+          "$ref": "#/$defs/EventCursor"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FrontierNode"
+          }
+        },
+        "paused": {
+          "type": "boolean"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "cursor",
+        "paused",
+        "nodes"
+      ]
+    },
+    "MessageKind": {
+      "type": "string",
+      "enum": [
+        "inform",
+        "request_result",
+        "commit",
+        "decline",
+        "progress",
+        "result",
+        "failed",
+        "decision_required",
+        "decision",
+        "resource_request",
+        "proposal",
+        "cancel",
+        "cancelled",
+        "handoff"
+      ]
+    },
+    "ModelCapability": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/Choices"
+        },
+        "model": {
+          "type": "string"
+        },
+        "speed": {
+          "$ref": "#/$defs/Choices"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "effort",
+        "speed"
+      ]
+    },
+    "ObservedValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "observed"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unsupported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "OperationId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "PrincipalId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "ProjectId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "Provider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude",
+        "pi"
+      ]
+    },
+    "RequestedValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "runtime_default"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "exact"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "Role": {
+      "type": "string",
+      "enum": [
+        "architect",
+        "executor",
+        "reviewer"
+      ]
+    },
+    "Selection": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/RequestedValue"
+        },
+        "model": {
+          "$ref": "#/$defs/RequestedValue"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/SnapshotId"
+        },
+        "speed": {
+          "$ref": "#/$defs/RequestedValue"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "snapshot_id",
+        "provider",
+        "model",
+        "effort",
+        "speed"
+      ]
+    },
+    "SnapshotId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "WorkNodeId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "WorkState": {
+      "type": "string",
+      "enum": [
+        "runnable",
+        "running",
+        "waiting_peer",
+        "waiting_decision",
+        "waiting_resource",
+        "pausing",
+        "paused",
+        "recovering",
+        "failed",
+        "done"
+      ]
+    }
+  }
+}

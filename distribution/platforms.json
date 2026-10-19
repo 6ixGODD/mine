@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "platforms": [
+    {"os":"linux","arch":"x86_64","kernel":"Linux","machine":"x86_64","target":"x86_64-unknown-linux-gnu","archive":"mine-linux-x86_64.tar.gz","binary":"mine","runner":"ubuntu-latest"},
+    {"os":"windows","arch":"x86_64","kernel":"Windows","machine":"AMD64","target":"x86_64-pc-windows-msvc","archive":"mine-windows-x86_64.zip","binary":"mine.exe","runner":"windows-latest"}
+  ]
+}

@@ -110,6 +110,22 @@ impl Envelope {
         self
     }
 
+    /// Expose the generated ordinary-write identity and actual progress. A
+    /// logical no-op has no checkpoint; it never fabricates one for reporting.
+    #[must_use]
+    pub fn with_checkpoint(
+        mut self,
+        operation: Option<crate::domain::lifecycle_operation::LifecycleOperation>,
+    ) -> Self {
+        if let Value::Object(data) = &mut self.data {
+            data.insert(
+                "operation".into(),
+                serde_json::to_value(operation).expect("typed operation serializes"),
+            );
+        }
+        self
+    }
+
     /// Adds a warning.
     #[must_use]
     pub fn with_warning(mut self, code: impl Into<String>, message: impl Into<String>) -> Self {
@@ -254,6 +270,11 @@ impl ErrorEnvelope {
         root.insert("error", Value::Object(err_map));
         root.insert("data", Value::Object(Map::new()));
         root.insert("warnings", Value::Array(Vec::new()));
+        if self.error.code == "MINE_GRAPH_COMMITTED_REPAIR_NEEDED" {
+            for key in ["revision_before", "revision_after"] {
+                root.insert(key, self.error.details[key].clone());
+            }
+        }
         serde_json::to_string(&root).expect("error envelope is JSON-serializable")
     }
 }

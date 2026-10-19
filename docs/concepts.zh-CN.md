@@ -1,5 +1,19 @@
 # MINE 核心概念
 
+0.2.0 新项目的治理目录为 `.mine/design/`、`.mine/plan/`，用户 `docs/` 不搬动；
+已有源工作区仍以真实配置为准。新 Plan ID 使用 `planNN(?:-NN)*(?:-CNN)?`，
+C 补偿后缀必须大写；文件名为 `<id>-<lower-kebab-slug>.md`。
+
+写域以职责/命名空间、排除项与物理映射界定，域内文件自治不允许改行为或验收契约。
+READY 不是权限：原生 start 检查所有持有中的 IN_PROGRESS/IMPLEMENTED owner、
+观察修订、prepared generation 以及真实 worktree/可变输出。Root 保持 integration。
+同操作 journal/checkpoint 用于恢复不确定结果，不允许重复执行或手工提交图状态。
+
+独立接受包含精确集成、当前适用验证与安全清理 worktree/本地分支；拒绝保留原分支，
+下一个同级补偿复用谱系 worktree，但不共用可变输出。输入绑定收据可避免重复全测，
+独立/原生/变更输入要求仍需真实证据。正面报告、历史收据或本地 release 完成均不等于
+发布许可，也不能证明未提供的原生主机通过了验证。
+
 MINE 是一套面向 Coding Agent 的文档驱动软件工程工作流。
 
 它解决的核心问题不是“如何让 Agent 写代码”，而是 **如何让一个持续数天、数周甚至更久的软件工程过程，在多个
@@ -34,7 +48,7 @@ flowchart LR
 
 ## 1. Design：记录当前有效的工程设计
 
-`docs/design/` 保存的是当前仓库 **已经接受**的工程设计。
+`.mine/design/` 保存的是当前仓库 **已经接受**的工程设计。
 
 它主要回答：
 
@@ -225,8 +239,9 @@ Plan 将 Design 中的某一部分转换成一个可独立执行和审查的工�
 
 此时不能直接把新的架构决策写进 Plan。
 
-`mine-plan-create` 可以主动调用 `mine-arch`，先分析影响范围并更新相关 Design，再继续生成 Plan。这个过程不要求用户手工切换
-Skill。
+这部分应交给 `mine-arch`，先分析影响范围，完成精确 ADR 的 owner 明确批准，
+并更新相关 Design，再继续依赖它的 Plan。不能把自动切换角色当作自动批准；
+职责域内不改变契约的局部选择仍由执行者自主决定。
 
 重要的边界不是“由谁调用 `mine-arch`”，而是： **所有持久工程决策都必须先进入 Design，再进入 Plan。**
 
@@ -325,9 +340,9 @@ MINE 使用 Git branch 和 worktree 隔离不同 Plan 的实现。
 stable
   │
   └── dev
-       ├── plan/01-api       → worktree A
-       ├── plan/02-storage   → worktree B
-       └── plan/03-ui        → worktree C
+       ├── plan/plan01-api       → worktree A
+       ├── plan/plan02-storage   → worktree B
+       └── plan/plan03-ui        → worktree C
 ```
 
 每个 Plan 有自己的写入范围。
@@ -487,7 +502,7 @@ Plan 05
     ↓ IMPLEMENTED
 mine-plan-review
     ↓ REJECTED
-Plan 05-1
+plan05-C01
 ```
 
 补偿 Plan 描述新的执行契约，原 Plan 05 则继续保持 `REJECTED`。
@@ -501,14 +516,14 @@ MINE 不会把原 Plan 修改成“其实第一次就应该这样做”。
 ```text
 Plan 06
 hard predecessors:
-    04
-    05
+    plan04
+    plan05
 ```
 
 Plan 05 被拒绝后创建：
 
 ```text
-Plan 05-1
+plan05-C01
 ```
 
 而 Plan 06 依赖的是 Plan 05 原本应该交付的结果，那么它的依赖需要改为：
@@ -516,15 +531,15 @@ Plan 05-1
 ```text
 Plan 06
 hard predecessors:
-    04
-    05-1
+    plan04
+    plan05-C01
 ```
 
 这个过程称为 compensation rewiring。
 
 ```mermaid
 flowchart LR
-    P5[Plan 05] -->|REJECTED| C[Plan 05-1]
+    P5[Plan 05] -->|REJECTED| C[plan05-C01]
     C --> P6[Plan 06]
 ```
 
@@ -568,19 +583,19 @@ stable 不需要保留生产这些结果时产生的所有中间过程。因此�
 
 ---
 
-## 10. 为什么 `docs/design/` 保留，而 `docs/plan/` 删除
+## 10. 为什么 `.mine/design/` 保留，而 `.mine/plan/` 删除
 
 两者保存的信息具有不同的生命周期。
 
 ### Design
 
-`docs/design/` 描述当前有效的系统。
+`.mine/design/` 描述当前有效的系统。
 
 下一轮开发仍然需要它，因此随产品一起进入 stable。
 
 ### Plan
 
-`docs/plan/` 描述当前这一轮开发过程：
+`.mine/plan/` 描述当前这一轮开发过程：
 
 * 做什么；
 * 谁依赖谁；
@@ -597,13 +612,13 @@ stable 不需要保留生产这些结果时产生的所有中间过程。因此�
 ```text
 stable
 ├── code
-└── docs/design/
+└── .mine/design/
 ```
 
 而：
 
 ```text
-docs/plan/
+.mine/plan/
 execution graph
 reports
 plan/*
@@ -657,7 +672,7 @@ Plan 03
 
 ## 12. Final Sync 与 Release Closure
 
-所有 Plan 都 `ACCEPTED`，只说明： **所有计划中的工作已经被实现和审查**。它不能自动证明最终 `docs/design/` 已经准确描述现在的代码。
+所有 Plan 都 `ACCEPTED`，只说明： **所有计划中的工作已经被实现和审查**。它不能自动证明最终 `.mine/design/` 已经准确描述现在的代码。
 
 实现过程中可能出现：
 
@@ -676,7 +691,7 @@ Plan 03
 mine-sync prepare this repository for stable release
 ```
 
-这一步重新比较最终代码和 Design，并把发布后仍然需要保留的工程知识同步回 `docs/design/`。
+这一步重新比较最终代码和 Design，并把发布后仍然需要保留的工程知识同步回 `.mine/design/`。
 
 Final Sync 解决的是： **即将进入 stable 的代码，与持久 Design 是否一致？**
 
@@ -692,7 +707,7 @@ Release closure 负责把开发状态整理成 stable 产品状态。
 
 ```mermaid
 flowchart LR
-    DEV[dev + docs/plan + reports] --> V[验证]
+    DEV[dev + .mine/plan + reports] --> V[验证]
     V --> C[stable candidate]
     C --> S[stable]
 ```
@@ -709,8 +724,8 @@ flowchart LR
 通过后：
 
 * 最终产品状态进入 stable；
-* `docs/design/` 保留；
-* `docs/plan/` 和执行报告删除；
+* `.mine/design/` 保留；
+* `.mine/plan/` 和执行报告删除；
 * MINE 管理的临时开发 branch/worktree 被清理。
 
 远程 push、Git tag、GitHub Release 或其他发布操作仍由用户决定。

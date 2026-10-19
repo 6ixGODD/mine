@@ -5,12 +5,12 @@ MINE Is Not Everyone's. These are durable, repository-wide agreements. Package-s
 
 ## Source of truth
 
-- Design knowledge base root: `docs/design/index.md` (progressive disclosure; indexes orient, leaves specify).
-- Design ownership marker: `docs/design/.mine-design.toml`.
-- Execution plans: `docs/plan/`.
-- Execution graph machine source: `docs/plan/execution-graph.toml`.
-- Execution graph generated view: `docs/plan/execution-graph.md`.
-- Implementation and review reports: `docs/plan/reports/`.
+- Design knowledge base root: `.mine/design/index.md` (progressive disclosure; indexes orient, leaves specify).
+- Design ownership marker: `.mine/design/.mine-design.toml`.
+- Execution plans: `.mine/plan/`.
+- Execution graph machine source: `.mine/plan/execution-graph.toml`.
+- Execution graph generated view: `.mine/plan/execution-graph.md`.
+- Implementation and review reports: `.mine/plan/reports/`.
 - Project configuration: `.mine/config.toml`.
 - Read requirements (`REQUIREMENTS.md`) and current implementation evidence before changing design or code.
 
@@ -46,7 +46,7 @@ This is a new project unless the user explicitly states otherwise. When a later 
   next sibling compensation. Never hand-edit graph state to escape
   `IN_PROGRESS`.
 - Plan IDs follow `planNN(?:-NN)*(?:-CNN)?`; files are
-  `docs/plan/<id>-<slug>.md`. Compensation uses the next sibling `C` ordinal
+  `.mine/plan/<id>-<slug>.md`. Compensation uses the next sibling `C` ordinal
   and reuses the base lineage worktree.
 
 ## Plan execution
@@ -68,7 +68,7 @@ Changes that alter or establish durable engineering behavior (business/runtime b
 
 ## Parallel execution
 
-- Use MINE CLI/MCP to query and transition `docs/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
+- Use MINE CLI/MCP to query and transition `.mine/plan/execution-graph.toml`; treat the Markdown graph as generated read-only output. Use the plan's work-package DAG.
 - Parallel lanes require disjoint write scopes, one owner per shared file, explicit start gates, join gates, and integration ownership.
 - Manifests, lockfiles, migrations, generated schemas/clients, root quality configuration, central registries, the execution graph, and reports are serialized unless a plan explicitly assigns one owner.
 - While a Plan workspace is open, the main (Root) worktree remains on the
@@ -95,8 +95,8 @@ Changes that alter or establish durable engineering behavior (business/runtime b
 
 MINE manages three branch roles:
 
-- **Stable branch** (`master` for this repository): contains stable product state, configuration, root README files, and `docs/design/`. It must not contain `docs/plan/` or tracked design backups. Direct plan implementation on the stable branch is forbidden.
-- **`dev`**: temporary integration branch for the active body of work, created from the latest accepted stable baseline by an authorized MINE Skill. It owns the active `docs/plan/` workspace and receives independently accepted plan branches. It is deleted after stable release integration.
+- **Stable branch** (`master` for this repository): contains stable product state, configuration, root README files, and `.mine/design/`. It must not contain `.mine/plan/` or tracked design backups. Direct plan implementation on the stable branch is forbidden.
+- **`dev`**: temporary integration branch for the active body of work, created from the latest accepted stable baseline by an authorized MINE Skill. It owns the active `.mine/plan/` workspace and receives independently accepted plan branches. It is deleted after stable release integration.
 - **`plan/<id>-<slug>`**: short-lived implementation/review branch based on accepted `dev`, checked out only in a dedicated linked worktree. It owns one plan and is merged into Root `dev` by the independent reviewer as part of acceptance. Successful cleanup of its linked worktree and merged local branch is required before `ACCEPTED` is recorded.
 
 By invoking a MINE Skill, the repository owner grants the active agent authority to:
@@ -127,7 +127,7 @@ Rust is the only implementation language for the `mine` core. Use the managed st
 
 ## Evidence and reports
 
-- Record exact commands, exit codes, concise observed output, inspected artifacts, skipped checks, failures, remaining risks, and preserved unrelated changes in `docs/plan/reports/`.
+- Record exact commands, exit codes, concise observed output, inspected artifacts, skipped checks, failures, remaining risks, and preserved unrelated changes in `.mine/plan/reports/`.
 - Independent review is required for `ACCEPTED`.
 
 ## Commit discipline
@@ -139,7 +139,7 @@ Rust is the only implementation language for the `mine` core. Use the managed st
 
 ## MINE graph discipline
 
-- Never edit `docs/plan/execution-graph.toml` or `docs/plan/execution-graph.md` directly.
+- Never edit `.mine/plan/execution-graph.toml` or `.mine/plan/execution-graph.md` directly.
 - Register plans and perform lifecycle transitions only through the installed `mine` MCP tools or `mine --format json` CLI.
 - Carry the observed revision into every write operation and stop on revision conflicts.
 - Until the `mine` CLI is wired, graph state transitions are performed by the independent bootstrap reviewer; implementation agents must not self-grant `ACCEPTED` or hand-edit graph state.

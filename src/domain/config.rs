@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::error::{MineError, MineResult};
 
+mod layout;
+pub use layout::GovernanceLayout;
+
 /// Top-level `.mine/config.toml` model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MineConfig {
@@ -58,11 +61,17 @@ impl Default for AdrConfig {
 }
 
 fn default_adr_registry() -> String {
-    "docs/design/decisions/adr-registry.toml".to_string()
+    GovernanceLayout::canonical()
+        .adr_registry()
+        .as_str()
+        .to_string()
 }
 
 fn default_adr_index() -> String {
-    "docs/design/decisions/index.md".to_string()
+    GovernanceLayout::canonical()
+        .adr_index()
+        .as_str()
+        .to_string()
 }
 
 fn default_adr_lock_timeout() -> u32 {
@@ -70,6 +79,11 @@ fn default_adr_lock_timeout() -> u32 {
 }
 
 impl MineConfig {
+    /// Resolves and validates the single configured governance namespace.
+    pub fn layout(&self) -> MineResult<GovernanceLayout> {
+        GovernanceLayout::from_config(self)
+    }
+
     /// Parses a configuration from TOML.
     ///
     /// # Errors

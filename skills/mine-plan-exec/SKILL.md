@@ -1,266 +1,170 @@
 ---
 name: mine-plan-exec
 description: Execute one repository implementation plan end to end in its MINE-prepared linked worktree. Use when the user invokes mine-plan-exec with a plan ID or file, asks to implement a governed plan, or wants dependency checks, code changes, verification, reporting, commits, and graph updates. Never implement directly on stable or dev.
-version: 0.1.13
+version: 0.2.0
 ---
 
 # MINE Plan Execute
 
-MINE Is Not Everyone's. Treat the supplied plan as an immutable execution contract. Implement it on the MINE-managed `plan/<id>-<slug>` branch, verify it, report it, and leave the
-current branch ready for review. Do not merely describe the work.
+Implement one immutable Plan end to end in its registered linked worktree, verify,
+commit scoped work and hand off IMPLEMENTED for independent review. Never implement
+on Root/dev/stable, self-accept, merge, push or publish as part of execution.
 
-## Integration: MCP tools and CLI fallback
+## Resolve identity and authority
 
-`mine-plan-exec` queries and transitions plan state through two paths, in this
-order of preference:
+Read AGENTS.md, requirements, Root .mine/config.toml/marker, the whole requested Plan,
+governing Design leaves, predecessor acceptance reports/commits and registered
+primary sources. Fetch the actual sources, not only a planner's paraphrase.
+Fresh governance roots are .mine/design/ and .mine/plan/; use actual configured paths.
 
-1. **MCP tools (preferred)** - when the current Agent runtime exposes the
-   MINE MCP server (`mine mcp serve`), call the typed MCP tools. They return
-   the same DTOs as the JSON CLI and never touch the execution-graph files.
-2. **JSON CLI (deterministic fallback)** - when MCP is unavailable, call
-   `mine --format json` commands. Never parse human output.
+Resolve Root from Git's first worktree inventory record. Query its graph show JSON.
+Match exact registered ID/path or the canonical alias forms: planNN / PNN / NN,
+including layered numeric segments and terminal -C01. Strip one invocation @ only.
+Require one distinct match, then use its exact stored ID in every command. Do not
+guess filenames, use substring matches, fill an omitted C ordinal or select another
+READY node. Legacy IDs are resolved only when actually present, never newly created.
 
-Never invent an MCP tool, CLI command, flag, JSON field, or lifecycle
-transition that the current binary does not expose. Never edit
-`docs/plan/execution-graph.toml` or `docs/plan/execution-graph.md` directly.
+Check installed version/help/MCP schemas first. Never bootstrap a future binary/Skill
+onto live older graph/layout. Complete active legacy work with its installed workflow;
+candidate commands belong only in isolated fixtures until actual release. Prefer
+available typed MCP tools; prepare, clarify, operations and verification use actual
+JSON CLI fallback where no corresponding MCP tool exists.
 
-The accepted MCP tools `mine-plan-exec` may use:
+## Admission and preparation
 
-- `mine_graph_status` (no arguments) - read the current revision (carry
-  `data.revision` as `expected_revision` before mutating).
-- `mine_plan_show` (`id`) - read the target node and verify it is `READY` or
-  already `IN_PROGRESS` for this implementation.
-- `mine_plan_start` (`id`, `owner`?, `run_id`?) - transition `READY` ->
-  `IN_PROGRESS` before any production-file edit.
-- `mine_plan_mark_implemented` (`id`, `report`, `commits`) - record the
-  implementation report and commit evidence (`IMPLEMENTED` status).
-- `mine_graph_validate` (no arguments) - validate the graph after transitions.
+Inspect status/index/branch/inventory and classify existing edits: continue same-Plan
+work, preserve unrelated work, investigate ambiguous overlap. Dirty status is not
+permission to discard or duplicate an executor. Never stash/reset/clean/restore
+another owner's changes.
 
-Operations `mine-plan-exec` needs that are intentionally **CLI-only** (no MCP
-tool exposes them):
+Require hard predecessors ACCEPTED with genuine reports/commits and this node READY
+or already IN_PROGRESS under the same owner/run. Read the complete graph wave/show
+snapshot, including held IN_PROGRESS/IMPLEMENTED owners, original/effective scope,
+policy/provenance, pending closures/checkpoints, lineage/worktree and mutable output/
+generator resources. READY/wave selection is advisory, not a write grant. Missing
+required semantic policy fails closed, never downgrades or drops a held owner.
 
-- `mine graph show --format json` - obtain the complete authoritative node
-  inventory for user-facing invocation resolution.
-- `mine plan prepare --id <exact-stored-id> --format json` - create or safely
-  reuse the registered linked worktree before start.
-- `mine plan release --id <id> --format json` - if a predecessor was just
-  accepted and the target node is still `BLOCKED`, release is the gate into
-  `READY`. There is no MCP tool for release; it is a CLI fallback. (Normally
-  `mine-plan-create` or `mine-plan-review` performs release; `mine-plan-exec`
-  only does so when explicitly authorized to advance a just-unblocked node.)
+For a fresh prepare, explicitly declare caller actor, generate one canonical UUIDv4,
+retain that identity and supply the exact observed Root revision:
+~~~text
+mine plan prepare --id <exact-id> --actor <actor> --expected-revision <R> --operation-id <uuid> --format json
+~~~
+Enter only its returned absolute linked worktree after completed checkpoint and
+verify registered branch/HEAD. The scheduler's location must match the same evidence.
+Record preparation generation, prepared branch commit, observed Root commit and
+checkpoint result separately. Root stays on configured integration branch.
 
-When a required operation has no MCP tool, fall back to the JSON CLI and state
-the fallback explicitly.
+If a prepare/checkpoint response is uncertain, query the returned same operation ID
+before retry; retain original actor/observer/mode/request. Never create a duplicate
+checkout, manually fast-forward a graph checkpoint or copy graph files into the Plan.
+A genuinely stale new request needs a fresh read/re-evaluation, not silent revision
+substitution. Explicit --reprepare and --recover-preparation are only for their
+native safe-baseline/legacy-evidence cases, never dirty/divergent checkout repair.
 
-## Resolve the requested plan
+After prepare completes, read Root revision again and start through MCP
+mine_plan_start(expected_revision,id,owner,run_id) or:
+~~~text
+mine plan start --id <exact-id> --owner <owner> --run-id <run> --expected-revision <R> --format json
+~~~
+No production edit is admitted until start and its native graph checkpoint complete.
+The selected generation's prepared commit becomes the immutable branch_anchor.
+An active continuation proves that stored anchor is an ancestor of the clean actual
+registered tip; today's Root HEAD is not a substitute. A pending checkpoint may
+already have persisted IN_PROGRESS: query/resume, do not rerun start.
 
-Accept exactly one `<plan-id-or-registered-path>`. Strip only an
-invocation-level `@`, then call `mine graph show --format json` from Root
-authority and match against the returned node IDs and registered paths.
+## Compensation body after start
 
-For each graph node, the accepted inputs are:
+A new compensation body registered at Root G may be absent from rejected tip P.
+Prepare/READY stay exactly at P in the same lineage worktree; do not advance READY,
+merge Root G, cherry-pick registration or move the preserved rejected branch.
 
-- its exact stored ID or exact registered path;
-- for a canonical stored ID beginning with `plan`, the ID with that prefix
-  removed or with that prefix replaced by one uppercase `P` (`planNN`, `NN`,
-  `PNN`; `planNN-CNN`, `NN-CNN`, `PNN-CNN`);
-- for the one legacy bootstrap node whose stored ID uses the `NN` placeholder,
-  accept `NN`, `PNN`, and `planNN`, all resolving to that exact stored ID.
+Only after completed start, the assigned same owner/run executor proves the exact
+Root body equals its registered/preparation digest and its bytes in observed G.
+Publish only that own canonical body path into the clean P checkout without clobber
+or normalization. Verify raw working bytes, actual attributes and index blob; commit
+one ordinary child of P whose sole tree addition is that body. An identical already
+committed body needs no new commit. Different bytes, links or foreign dirty state
+are preserved/refused. Do not copy other Plans/reports/policies/Design/config/graph.
+Record G, P, digest and materialization commit. Verification reads the real committed
+checkout body afterward; there is no Root-body fallback.
 
-Collect matches by exact equality and require exactly one distinct graph node.
-Fail clearly on zero or multiple matches. Matching is case-sensitive. Never
-use prefix/substring matching, guess a filename, fill in a missing
-compensation ordinal, select the latest compensation, or pass shorthand to a
-binary command. Inputs such as `NN-C` do not mean `planNN-CNN`. After unique
-resolution, use only the exact stored ID for `mine plan show`, `mine plan
-prepare`, and every lifecycle command. Never select another node merely
-because it is READY.
+Interrupted body materialization first audits the same start/owner/run/anchor/ref/
+worktree. Only its sole exact uncommitted addition, all bytes equal and HEAD still P,
+may finish that same body-only commit. A lost commit response is reconciled from the
+actual body-only child, not another commit. Generic dirty prepare is not a pass.
 
-## Load governance and evidence
+## Implementation authority
 
-Before modifying anything, locate the repository root and read these sources completely in this order:
+Follow the Plan's work-package DAG. Responsibility/namespaces, behavior and exclusions
+are authority; physical mappings locate it. Make bounded internal file/symbol splits
+inside that scope without repeated permission, recording decisions. Do not cross
+public/persistent/security/architecture/acceptance boundaries or touch shared files
+owned elsewhere. An architect assigned a foundation uses this same path and must
+deliver a real consumer/invariant, not unused scaffolding or a Root exception.
 
-1. Root `AGENTS.md`.
-2. The design knowledge base rooted at `docs/design/index.md` (and the relevant leaves named by `AGENTS.md`).
-3. Query the plan and graph through `mine_plan_show` (MCP) or `mine plan show --id <id> --format json` (CLI fallback), and `mine_graph_status` (MCP) or `mine graph status --format json` (CLI fallback); use `docs/plan/execution-graph.md` only as a generated readable view.
-4. The requested plan.
-5. `docs/plan/parallel-execution-protocol.md` when the plan declares a parallel lane.
-6. Every hard-predecessor acceptance report and the commits named by those reports.
-7. Fetch and read the official sources or best-practice references explicitly registered by the plan; do not implement from the plan's paraphrase alone.
-8. Only the implementation files, tests, and documentation needed to verify current reality for this plan.
+A frozen mapping/generator-closure defect may use owner-authorized native clarification:
+plan clarify --id <id> --expected-revision <R> --input <contained-json>.
+Preserve original Plan bytes/digest/declarations; append exact identity/actor/reason/
+policy/tail provenance, and let native admission check all held owners. Do not
+rehash tampered Plan bytes, invent historic digests, broaden behavior/dependencies/
+acceptance or use clarification as prompt-only policy activation.
 
-Apply repository governance in this order: `AGENTS.md` → architecture → registered official sources → requested plan. A newer explicit user
-instruction may narrow or override the requested operation, but never silently rewrite the immutable plan.
+Run the narrow regression first, implement cohesively, cover errors and downstream
+consumers, remove obsolete internal behavior, then run required broader affected
+gates. Coordinate shared setup/central manifests/generator inputs through their named
+owner. One integration owner regenerates the complete combined output transaction.
 
-Convert the plan into an execution checklist before coding. For every implementation step identify its inputs, target files/interfaces,
-edge cases, verification, and acceptance item. Do not rediscover or change resolved product decisions.
+## Evidence without duplicate work
 
-## Enforce the execution gate
+Reuse Root toolchains/downloads/venv and safe immutable caches. Every language's
+mutable build/test/generated/coverage/package/log output belongs under
+<Root>/.mine/build/<exact-plan-id>/<output-class>/, separate even for compensation.
+No worktree target/.venv/node_modules or shared parallel mutable directory. Measure
+exceptional cost and agree owner strategy/cleanup before building; never silently
+weaken isolation or delete foreign artifacts.
 
-Read the execution graph rather than inferring readiness from filenames.
+Use actual native verification capture/record/check JSON contracts with requests in
+Root .mine/build/<exact-plan-id>/<output-class>/<file>. Capture current source/body/
+policy/toolchain/environment/platform/features before running the external command;
+record actual outcomes/artifact digests afterward. These commands never run tests.
+Check old receipts with fresh context before reuse. A successful JSON process exit
+can report INVALIDATED/NON_REUSABLE; inspect disposition/reason, not only exit0.
+RUN/REUSED/INVALIDATED/NON_REUSABLE/NOT_RUN remain distinct. Preserve first failures,
+warnings, timeouts and native-host absence. Reuse exact applicable evidence without
+rerunning it, but never erase required independent/native or changed-input probes.
 
-- Require every hard predecessor to be `ACCEPTED` and backed by an implementation commit plus an acceptance report.
-- Require the requested node to be `READY` or already `IN_PROGRESS` for this same implementation.
-- If the node is `BLOCKED`, `CONDITIONAL` without its gate, `REJECTED`, or already `ACCEPTED`, do not implement it. Report the exact state
-  and missing evidence.
-- Treat an uncommitted predecessor or missing report as not accepted.
-- Detect conflicts between the graph, plan, architecture, reports, and code. Stop before mutation when the conflict changes scope, contracts,
-  or acceptance criteria; explain the concrete conflict to the user.
+## Commits, completion and recovery
 
-Do not edit, rename, renumber, delete, or append to the requested plan or any earlier immutable plan. If implementation proves the plan or
-architecture wrong, stop and request a compensating design/plan instead of improvising.
+Stage explicit in-scope files only, audit cached paths/diff/check and use normal
+Conventional Commits. Commit the implementation and canonical implementation report
+before graph mutation. Report exact commands/exits/artifacts/input identities, local
+decisions, untouched concurrent work, skipped/failed checks and remaining downstream
+gaps. Do not call partial work IMPLEMENTED.
 
-## Work in the assigned plan branch
+Read Root observer revision and use mine_plan_mark_implemented with actor,
+expected_revision,id,report,commits, or the installed plan implemented CLI carrying
+those exact fields. Native graph checkpoint owns only its graph pair; do not stage
+it manually or hide pending publication. Validate returned completed state and graph.
+If checkpoint publication is pending, query/resume the same operation, not a new
+execution/compensation. Never self-accept.
 
-Plan implementation runs on the MINE-managed `plan/<id>-<slug>` branch,
-created or reused only by `mine plan prepare` - never directly on the stable
-branch or on `dev`. Call `mine plan show --id <exact-stored-id> --format json`,
-then `mine plan prepare --id <exact-stored-id> --format json`. Change the
-process directory to the returned absolute worktree path and verify its
-observed branch equals the registered branch before any write or `plan start`.
-A scheduler- or user-supplied worktree is authoritative only when the same
-prepare call reports that exact path and branch. A refusal blocks execution;
-never fall back to direct Git branch or worktree creation.
+Objective immutable-Plan infeasibility stops implementation without IMPLEMENTED.
+Preserve evidence and scoped reproduction commits, keep the node IN_PROGRESS and
+handoff independent review/material ADR decision. Infrastructure/transport failure
+alone is not rejection. On final handoff explicitly stop relinquished checkout/output
+use; the reviewer needs real owner/run stop evidence, not silence or clean status.
 
-Use the returned authoritative Root for graph commands. Root remains on the
-integration branch and is never switched. Compensation nodes reuse the
-binary-reported lineage directory. For an `IN_PROGRESS` continuation,
-preparation is valid only when observed HEAD equals the registered branch tip
-and the persisted `branch_anchor` is an ancestor of that tip; current Root HEAD
-is never substituted as the anchor.
-- Never implement on stable or `dev` directly.
-- Never stash, reset, clean, restore, or checkout to discard existing
-  changes; never force-push or rewrite shared history.
-- Do not tell the user to merge a hidden implementation branch afterward.
-- Do not delegate plan execution unless the user explicitly requests
-  delegation.
+Report final live status: reviewable IMPLEMENTED, executing IN_PROGRESS, READY,
+BLOCKED/pending operations and accepted/withdrawn nodes, plus exact Plan/worktree,
+commits, verification and next reviewer action. Do not claim acceptance or release.
 
-Before editing, inspect `git status --short`, the current branch, and staged changes. Classify existing changes as:
 
-- **same-plan work**: inspect and continue it rather than duplicating it;
-- **unrelated work**: preserve it and exclude it from plan commits;
-- **ambiguous overlap**: investigate with diffs and history; ask the user only if safe integration cannot be determined.
+## Canonical durable bounds
 
-Dirty status alone is not a blocker. Shared files are a blocker only when existing edits overlap the plan and cannot be preserved or
-integrated safely. Stage explicit paths only; never use `git add .` or `git add -A` in a dirty workspace.
-
-Before editing production files, read the current revision: call `mine_graph_status` (MCP) or `mine graph status --format json` (CLI fallback) (carry `data.revision` as `expected_revision`) and start the plan: call `mine_plan_start` (MCP) with the exact stored `id`, `owner`, `run_id`; or `mine plan start --id <exact-stored-id> --owner <owner> --run-id <run> --format json` (CLI fallback). Proceed only after MINE returns `IN_PROGRESS` (exit 0) and the returned persisted `branch_anchor` equals the prepared worktree HEAD. The accepted MINE CLI and MCP tools read the current revision under the lock themselves; they emit `revision_before`/`revision_after` in the envelope. Never edit either execution-graph file directly. For parallel lanes, MINE remains the serialized status owner and the plan's path ownership rules remain mandatory.
-
-For a parallel lane, obey its exclusive write paths and read-only dependencies exactly. Do not edit reserved shared files, even to register
-an import, CLI command, dependency, or fixture; record those needs as integration requests for the final integration plan. Never run two
-owners on the same lane or create a second implementation after a timeout—inspect and continue the existing diff.
-
-## Implement the plan
-
-Execute the plan steps in order unless the plan explicitly permits parallel order. Keep changes within its scope.
-
-1. Establish or run the plan's failing regression evidence before the fix when requested.
-2. Implement the smallest cohesive production change that satisfies the step and architecture.
-3. Add or update deterministic tests for the changed contract.
-4. Run the step's narrow verification before proceeding.
-5. Update documentation/configuration generated or owned by the changed interface.
-6. Re-read the plan checklist after each major step to prevent scope drift.
-
-Use the repository's managed toolchain and editing conventions. Preserve restricted data, generated artifacts, credentials, checkpoints, and
-user files according to `AGENTS.md` and the architecture. Never print, stage, commit, or copy secrets into reports.
-
-When the plan authorizes cleanup, operate on the actual current workspace so local leftovers are visible. Prefer moving uncertain user
-artifacts to the plan's ignored quarantine path over deleting them. Never use broad destructive commands such as `git clean -fdx`.
-
-Do not add compatibility aliases, migrations, or shims unless the plan or user explicitly requires them. Do not perform remote execution,
-uploads, submissions, deployments, or pushes unless the plan and user authorize that external mutation.
-
-If execution proves an immutable requirement infeasible, stop. Preserve and,
-when safe, commit a minimal reproduction; leave Root and the Plan worktree
-clean; report the exact evidence and keep the graph `IN_PROGRESS`. Never claim
-`IMPLEMENTED`, fabricate implementation evidence, edit the Plan, reject the
-Plan yourself, or create its compensation. Independent review owns the
-evidence-bound active rejection.
-
-## Commit implementation safely
-
-Follow the plan's suggested commit boundaries when they remain cohesive. Otherwise use a small number of Conventional Commits organized by
-concern.
-
-Before every commit:
-
-1. Inspect `git status --short` and `git diff`.
-2. Stage only explicit files belonging to the active plan.
-3. Inspect `git diff --cached --check`, `--stat`, and `--name-status`.
-4. Confirm no unrelated changes, restricted data, artifacts, models, archives, logs, or credentials are staged.
-5. Commit without rewriting previous shared history.
-
-In a parallel execution wave, staging and commit form a serialized critical section. If the index already contains files from another lane,
-do not commit, unstage, or alter them; wait for that owner. Confirm every cached path belongs to the current plan before committing.
-
-Do not push. Do not amend an earlier plan or another agent's commit.
-
-## Verify the completed implementation
-
-Run every verification command required by the plan. Also run the repository gates that apply to the affected scope:
-
-- focused tests, followed by the broader suite required by the plan;
-- the formatter, linter, static-analysis, and type-check gates defined for the affected scope by `AGENTS.md` and the architecture;
-- integration/smoke commands required by the plan;
-- `git diff --check` and a final staged-scope audit.
-
-Use exact commands from the managed environment. Never call a timeout, skip, missing dependency, non-zero exit, or unrun command a pass.
-Fix in-scope failures. Record unrelated or environmental failures precisely; do not weaken tests, typing, lint configuration, or acceptance
-thresholds merely to obtain green output.
-
-## Write the acceptance report
-
-Create the report path required by the plan under `docs/plan/reports/`. The implementation agent reports evidence but does not grant itself
-independent acceptance.
-
-Include:
-
-- plan path and execution date;
-- baseline commit/branch and implementation commits;
-- files/interfaces changed and why;
-- each plan step and acceptance item with evidence;
-- exact commands, exit status, and concise observed output;
-- skipped, failed, timed-out, or unavailable checks;
-- deviations from the plan and why they were necessary;
-- remaining risks, external actions, and user decisions;
-- current working-tree state and explicitly preserved unrelated changes.
-
-Set the implementation report conclusion to:
-
-- `IMPLEMENTED` when all implementation work and required verification are complete and committed, pending reviewer acceptance;
-- `IN_PROGRESS` when required in-scope work remains;
-- never `ACCEPTED` merely because the implementing agent wrote the report.
-
-`ACCEPTED` requires the reviewer process defined by `AGENTS.md`. After committing the implementation and report, record the implementation evidence: call `mine_plan_mark_implemented` (MCP) with `id`, `report`, `commits`; or `mine plan implemented --id <id> --report <report path> --commit <hash> --format json` (CLI fallback) (repeat `--commit` for each implementation commit) - the accepted MINE CLI and MCP tool read the current revision under the lock and emit `revision_before`/`revision_after`. The reviewer later performs the accept/reject transition through MINE. Do not release downstream plans while the node is only `IMPLEMENTED`.
-
-Commit the report and, only when owned, final graph status using explicit paths. Parallel lane agents never stage the graph. Verify the resulting commit and confirm the assigned branch contains every implementation/report commit. For a non-parallel plan, no hidden merge step may remain. For a parallel lane, report the exact branch/worktree, commits, and declared join artifact required by the integration owner; do not merge it yourself unless the plan assigns integration ownership.
-
-## Finish with a self-contained handoff
-
-Report:
-
-- the plan executed and its final graph status;
-- the implementation and report commit hashes;
-- the important behavior/files changed;
-- verification commands and outcomes;
-- failures, skipped checks, remaining risks, and required reviewer/user actions;
-- unrelated working-tree changes preserved;
-- for non-parallel work, state that the work is already on the assigned branch with no hidden merge step; for a parallel lane, state the exact integration handoff and join artifact.
-
-Lead with the outcome. Do not claim the plan is accepted until the repository's reviewer has actually accepted it.
-
-## Shared toolchains and Plan-isolated mutable outputs
-
-Reuse Root-managed toolchains, dependency downloads, virtual environments, and
-only caches proven read-only or safely content-addressed. Do not create a
-second `.venv`, `venv`, `target`, `node_modules`, or equivalent environment or
-cache directory in a linked Plan worktree.
-
-Mutable build, test, generation, coverage, packaging, and runner outputs must
-use `<Root>/.mine/build/<plan-id>/<tool-or-output-class>/`. For Rust, set
-`CARGO_TARGET_DIR` to the exact Plan namespace, for example
-`<Root>/.mine/build/<exact-plan-id>/cargo-target`; never use Root `target` or a
-worktree-local `target`. If a measured output is predictably very large,
-record the estimate and pause for explicit owner agreement on serialization,
-a coarser exclusive namespace, and cleanup; never fall back automatically to a
-globally shared mutable directory.
+All new IDs follow planNN(?:-NN)*(?:-CNN)? (two-digit numeric segments, uppercase
+terminal C). Files are <configured-plan-root>/<id>-<lower-kebab-slug>.md.
+Compensation uses the next contiguous sibling C ordinal in the same lineage.
+Never edit the configured execution-graph.toml or generated execution-graph.md
+directly. Root owns graph/config/locks/revision even for linked callers.
+For Rust set CARGO_TARGET_DIR to that exact Plan's isolated output class; the
+same mutable-output isolation applies to every other language, not just Cargo.

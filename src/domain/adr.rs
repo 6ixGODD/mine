@@ -114,7 +114,7 @@ impl AdrRegistry {
         for entry in &self.entries {
             validate_adr_id(&entry.id)?;
             normalize_repo_relative(&entry.path)?;
-            if !entry.path.starts_with("docs/design/decisions/") || !entry.path.ends_with(".md") {
+            if !entry.path.ends_with(".md") {
                 return Err(registry_error(
                     &entry.id,
                     "body path must be a decision Markdown file",
@@ -432,7 +432,10 @@ fn validate_adr_id(id: &str) -> MineResult<()> {
 
 fn registry_error(id: &str, detail: &str) -> MineError {
     MineError::AdrRegistryInvalid {
-        path: std::path::PathBuf::from("docs/design/decisions/adr-registry.toml"),
+        path: std::path::PathBuf::from(format!(
+            "{}/decisions/adr-registry.toml",
+            crate::domain::config::GovernanceLayout::DESIGN_DIR
+        )),
         detail: format!("{id}: {detail}"),
     }
 }

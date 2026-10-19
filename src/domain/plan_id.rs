@@ -142,14 +142,14 @@ impl fmt::Display for CanonicalPlanId {
 /// Validates a canonical Plan filename and returns its lowercase-kebab slug.
 pub fn validate_plan_path(id: &str, path: &str) -> MineResult<String> {
     let parsed = CanonicalPlanId::parse(id)?;
-    let prefix = "docs/plan/";
-    let filename = path
-        .strip_prefix(prefix)
-        .ok_or_else(|| invalid(path, "must be under docs/plan/"))?;
+    crate::domain::graph::RepoPath::new(path).map_err(|_| invalid(path, "unsafe Plan path"))?;
+    let (_, filename) = path
+        .rsplit_once('/')
+        .ok_or_else(|| invalid(path, "Plan needs an owned parent directory"))?;
     if filename.contains('/') || filename.contains('\\') || !filename.ends_with(".md") {
         return Err(invalid(
             path,
-            "must be one Markdown file directly under docs/plan/",
+            "must be one Markdown file directly under the configured Plan root",
         ));
     }
     let expected_prefix = format!("{}-", parsed);
@@ -167,13 +167,28 @@ pub fn validate_plan_path(id: &str, path: &str) -> MineResult<String> {
 }
 
 /// Validates a report path derived from a Plan filename.
-pub fn validate_report_path(id: &str, slug: &str, path: &str, kind: &str) -> MineResult<()> {
-    validate_slug(slug, path)?;
-    let expected = format!("docs/plan/reports/{id}-{slug}-{kind}.md");
+pub fn validate_report_path(plan_path: &str, path: &str, kind: &str) -> MineResult<()> {
+    let expected = report_path(plan_path, kind)?;
     if path != expected {
         return Err(invalid(path, &format!("expected report path {expected}")));
     }
     Ok(())
+}
+
+/// Derive a report from an already registered Plan body, never a second root.
+pub fn report_path(plan_path: &str, kind: &str) -> MineResult<String> {
+    crate::domain::graph::RepoPath::new(plan_path)
+        .map_err(|_| invalid(plan_path, "unsafe Plan path"))?;
+    if !matches!(kind, "implementation" | "review") {
+        return Err(invalid(kind, "unknown Plan report kind"));
+    }
+    let (directory, body) = plan_path
+        .rsplit_once('/')
+        .ok_or_else(|| invalid(plan_path, "Plan needs a parent"))?;
+    let stem = body
+        .strip_suffix(".md")
+        .ok_or_else(|| invalid(plan_path, "Plan needs Markdown extension"))?;
+    Ok(format!("{directory}/reports/{stem}-{kind}.md"))
 }
 
 /// Validates that a replacement is the next sibling in the rejected lineage.

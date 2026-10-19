@@ -40,32 +40,27 @@ fn git(repo: &Path, args: &[&str]) {
 
 /// A repository on the managed `dev` branch with an open plan workspace.
 fn managed_repo() -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().unwrap();
-    let repo = tmp.path().to_path_buf();
-    git(&repo, &["init", "--quiet"]);
-    git(&repo, &["config", "user.email", "t@t"]);
-    git(&repo, &["config", "user.name", "t"]);
-    std::fs::write(repo.join("README.md"), "fixture\n").unwrap();
-    std::fs::write(repo.join(".gitignore"), "/.mine/\n").unwrap();
-    git(&repo, &["add", "README.md", ".gitignore"]);
-    git(&repo, &["commit", "--quiet", "-m", "initial"]);
-    assert_eq!(dispatch(&repo, &["init"]).exit_code, 0);
-    git(&repo, &["add", "-A"]);
-    git(&repo, &["commit", "--quiet", "-m", "mine init"]);
-    git(&repo, &["switch", "-c", "dev"]);
-    assert_eq!(dispatch(&repo, &["workspace", "open"]).exit_code, 0);
-    (tmp, repo)
+    common::seeded_repo(vec![])
 }
 
 /// Registers one canonical plan as DRAFT (`register` only) and returns its id.
 fn register_plan(repo: &Path, id: &str) {
-    let path = format!("docs/plan/{id}-fixture.md");
+    let path = format!(".mine/plan/{id}-fixture.md");
     std::fs::write(repo.join(&path), format!("# {id}\n")).unwrap();
+    git(repo, &["add", "--", &path]);
+    git(
+        repo,
+        &["commit", "--quiet", "-m", "explicit registration body"],
+    );
     let outcome = dispatch(
         repo,
         &[
             "plan",
             "add",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "72",
             "--id",
             id,
             "--path",
@@ -73,7 +68,7 @@ fn register_plan(repo: &Path, id: &str) {
             "--title",
             "fixture",
             "--design-ref",
-            "docs/design/index.md",
+            ".mine/design/index.md",
             "--write",
             "src/",
         ],
@@ -81,14 +76,77 @@ fn register_plan(repo: &Path, id: &str) {
     assert_eq!(outcome.exit_code, 0, "plan add {id} failed");
 }
 
-fn release_plan(repo: &Path, id: &str) {
-    let outcome = dispatch(repo, &["plan", "release", "--id", id]);
-    assert_eq!(outcome.exit_code, 0, "plan release {id} failed");
+fn release_plan(repo: &Path, id: &str, expected: u64) {
+    let revision = expected.to_string();
+    let outcome = dispatch(
+        repo,
+        &[
+            "plan",
+            "release",
+            "--id",
+            id,
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            &revision,
+        ],
+    );
+    assert_eq!(outcome.exit_code, 0, "{}", envelope(&outcome));
 }
 
-fn commit_all(repo: &Path, message: &str) {
-    git(repo, &["add", "-A"]);
-    git(repo, &["commit", "--quiet", "-m", message]);
+fn prepare_plan(repo: &Path, id: &str, expected: u64) -> cli::Outcome {
+    let revision = expected.to_string();
+    let operation = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        repo,
+        &[
+            "plan",
+            "prepare",
+            "--id",
+            id,
+            "--actor",
+            "fixture-preparer",
+            "--expected-revision",
+            &revision,
+            "--operation-id",
+            &operation,
+        ],
+    )
+}
+
+fn withdraw_plan(repo: &Path, id: &str, reason: &str, expected: u64) -> cli::Outcome {
+    let revision = expected.to_string();
+    let operation = uuid::Uuid::new_v4().to_string();
+    dispatch(
+        repo,
+        &[
+            "plan",
+            "withdraw",
+            "--id",
+            id,
+            "--reason",
+            reason,
+            "--actor",
+            "fixture-coordinator",
+            "--expected-revision",
+            &revision,
+            "--operation-id",
+            &operation,
+        ],
+    )
+}
+
+fn assert_clean(repo: &Path) {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["status", "--porcelain=v1", "-uall"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success() && output.stdout.is_empty(),
+        "{output:?}"
+    );
 }
 
 fn graph(repo: &Path) -> PlanWorkspace {
@@ -105,18 +163,8 @@ fn draft_withdraw_is_graph_only_with_deterministic_envelope() {
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     let before = graph(&repo);
-    let outcome = dispatch(
-        &repo,
-        &[
-            "plan",
-            "withdraw",
-            "--id",
-            // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            "plan02",
-            "--reason",
-            "superseded design",
-        ],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "superseded design", 73);
     assert_eq!(outcome.exit_code, 0);
     let env = envelope(&outcome);
     assert_eq!(env["command"], "plan.withdraw");
@@ -138,12 +186,9 @@ fn draft_withdraw_is_graph_only_with_deterministic_envelope() {
     assert_eq!(node.withdraw_reason, "superseded design");
     assert!(!node.withdrawn_at.is_empty());
     assert_eq!(after.revision, before.revision + 1, "revision bumped once");
-    // Not idempotent-success: re-running refuses and writes nothing.
-    let rerun = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "again"],
-    );
+    // A new operation with a changed reason is not a same-ID recovery replay.
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let rerun = withdraw_plan(&repo, "plan02", "again", 74);
     assert_eq!(rerun.exit_code, 4);
     let env = envelope(&rerun);
     assert_eq!(env["error"]["code"], "MINE_INVALID_TRANSITION");
@@ -160,17 +205,14 @@ fn empty_reason_is_refused_without_writes() {
     let (tmp, repo) = managed_repo();
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
-    let outcome = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "  "],
-    );
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "  ", 73);
     assert_eq!(outcome.exit_code, 4);
     let env = envelope(&outcome);
     assert_eq!(env["error"]["code"], "MINE_GRAPH_INVALID");
     assert_eq!(
-        std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap(),
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
         before
     );
     drop(tmp);
@@ -182,24 +224,35 @@ fn started_plan_cannot_be_withdrawn() {
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan02");
+    release_plan(&repo, "plan02", 73);
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    commit_all(&repo, "register plan02");
+    assert_clean(&repo);
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        dispatch(&repo, &["plan", "prepare", "--id", "plan02"]).exit_code,
+        prepare_plan(&repo, "plan02", 74).exit_code,
         0
     );
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        dispatch(&repo, &["plan", "start", "--id", "plan02"]).exit_code,
+        dispatch(
+            &repo,
+            &[
+                "plan",
+                "start",
+                "--id",
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                "plan02",
+                "--owner",
+                "fixture-executor",
+                "--expected-revision",
+                "75"
+            ]
+        )
+        .exit_code,
         0
     );
-    let outcome = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "too late"],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "too late", 76);
     assert_eq!(outcome.exit_code, 4);
     let env = envelope(&outcome);
     assert_eq!(env["error"]["code"], "MINE_INVALID_TRANSITION");
@@ -217,20 +270,10 @@ fn ready_unprepared_plan_withdraws_graph_only() {
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan02");
+    release_plan(&repo, "plan02", 73);
     // Never prepared: the registered branch was never created in Git.
-    let outcome = dispatch(
-        &repo,
-        &[
-            "plan",
-            "withdraw",
-            "--id",
-            // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            "plan02",
-            "--reason",
-            "stale registration",
-        ],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "stale registration", 74);
     assert_eq!(outcome.exit_code, 0);
     let env = envelope(&outcome);
     assert_eq!(env["data"]["status_before"], "READY");
@@ -249,12 +292,12 @@ fn ready_prepared_lane_cleanup_is_lossless() {
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan02");
+    release_plan(&repo, "plan02", 73);
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    commit_all(&repo, "register plan02");
+    assert_clean(&repo);
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        dispatch(&repo, &["plan", "prepare", "--id", "plan02"]).exit_code,
+        prepare_plan(&repo, "plan02", 74).exit_code,
         0
     );
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
@@ -263,18 +306,8 @@ fn ready_prepared_lane_cleanup_is_lossless() {
     let branch = graph(&repo).get("plan02").unwrap().branch.clone();
     assert!(worktree.exists());
 
-    let outcome = dispatch(
-        &repo,
-        &[
-            "plan",
-            "withdraw",
-            "--id",
-            // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            "plan02",
-            "--reason",
-            "architecture replaced",
-        ],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "architecture replaced", 75);
     assert_eq!(outcome.exit_code, 0);
     let env = envelope(&outcome);
     assert_eq!(env["data"]["cleaned_git_artifacts"], true);
@@ -306,18 +339,64 @@ fn git_branch_exists(repo: &Path, branch: &str) -> bool {
     out.status.success() && !out.stdout.is_empty()
 }
 
+fn refusal_snapshot(repo: &Path, worktree: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    let mut snapshot = std::collections::BTreeMap::new();
+    for (label, directory) in [("root", repo), ("plan", worktree)] {
+        for (name, args) in [
+            ("head", vec!["rev-parse", "HEAD"]),
+            ("refs", vec!["show-ref"]),
+            ("status", vec!["status", "--porcelain=v1", "-uall"]),
+            (
+                "index",
+                vec!["rev-parse", "--path-format=absolute", "--git-path", "index"],
+            ),
+        ] {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(directory)
+                .args(args)
+                .env("GIT_OPTIONAL_LOCKS", "0")
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            let bytes = if name == "index" {
+                let index = std::str::from_utf8(&output.stdout).unwrap().trim();
+                std::fs::read(index).unwrap()
+            } else {
+                output.stdout
+            };
+            snapshot.insert(format!("{label}/{name}"), bytes);
+        }
+    }
+    for path in [
+        ".mine/plan/execution-graph.toml",
+        ".mine/plan/execution-graph.md",
+    ] {
+        snapshot.insert(path.into(), std::fs::read(repo.join(path)).unwrap());
+    }
+    for entry in std::fs::read_dir(repo.join(".mine/runtime/operations")).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file());
+        snapshot.insert(
+            format!("journal/{}", entry.file_name().to_str().unwrap()),
+            std::fs::read(entry.path()).unwrap(),
+        );
+    }
+    snapshot
+}
+
 #[test]
 fn diverged_tip_refuses_exit_6_and_preserves_artifacts() {
     let (tmp, repo) = managed_repo();
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan02");
+    release_plan(&repo, "plan02", 73);
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    commit_all(&repo, "register plan02");
+    assert_clean(&repo);
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        dispatch(&repo, &["plan", "prepare", "--id", "plan02"]).exit_code,
+        prepare_plan(&repo, "plan02", 74).exit_code,
         0
     );
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
@@ -328,21 +407,20 @@ fn diverged_tip_refuses_exit_6_and_preserves_artifacts() {
     std::fs::write(worktree.join("unique.txt"), "never committed to dev\n").unwrap();
     git(&worktree, &["add", "unique.txt"]);
     git(&worktree, &["commit", "--quiet", "-m", "unique work"]);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
+    let artifacts = refusal_snapshot(&repo, &worktree);
 
-    let outcome = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "stale"],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "stale", 75);
     assert_eq!(
         outcome.exit_code, 6,
         "diverged tip is a Git-evidence refusal"
     );
     let env = envelope(&outcome);
     assert_eq!(env["error"]["code"], "MINE_GIT_EVIDENCE");
+    assert_eq!(refusal_snapshot(&repo, &worktree), artifacts);
     assert_eq!(
-        std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap(),
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
         before,
         "nothing written"
     );
@@ -357,29 +435,32 @@ fn dirty_worktree_refuses_exit_6_and_preserves_artifacts() {
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan02");
+    release_plan(&repo, "plan02", 73);
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    commit_all(&repo, "register plan02");
+    assert_clean(&repo);
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        dispatch(&repo, &["plan", "prepare", "--id", "plan02"]).exit_code,
+        prepare_plan(&repo, "plan02", 74).exit_code,
         0
     );
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     let worktree = worktree_of(&repo, "plan02");
     std::fs::write(worktree.join("scratch.txt"), "uncommitted\n").unwrap();
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
+    let artifacts = refusal_snapshot(&repo, &worktree);
 
-    let outcome = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "stale"],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "stale", 75);
     assert_eq!(outcome.exit_code, 6);
     let env = envelope(&outcome);
     assert_eq!(env["error"]["code"], "MINE_GIT_EVIDENCE");
+    assert_eq!(refusal_snapshot(&repo, &worktree), artifacts);
     assert_eq!(
-        std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap(),
+        std::fs::read(worktree.join("scratch.txt")).unwrap(),
+        b"uncommitted\n"
+    );
+    assert_eq!(
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
         before
     );
     drop(tmp);
@@ -394,18 +475,15 @@ fn draft_with_stray_branch_artifacts_refuses() {
     let branch = graph(&repo).get("plan02").unwrap().branch.clone();
     // Stray Git artifact on an unstarted registration: inconsistent state.
     git(&repo, &["branch", &branch, "dev"]);
-    let before = std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap();
+    let before = std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap();
 
-    let outcome = dispatch(
-        &repo,
-        // mine-release-allow-plan-reference: plan-id lifecycle fixture
-        &["plan", "withdraw", "--id", "plan02", "--reason", "stale"],
-    );
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    let outcome = withdraw_plan(&repo, "plan02", "stale", 73);
     assert_eq!(outcome.exit_code, 4);
     let env = envelope(&outcome);
     assert_eq!(env["error"]["code"], "MINE_GRAPH_INVALID");
     assert_eq!(
-        std::fs::read(repo.join("docs/plan/execution-graph.toml")).unwrap(),
+        std::fs::read(repo.join(".mine/plan/execution-graph.toml")).unwrap(),
         before
     );
     drop(tmp);
@@ -418,21 +496,33 @@ fn withdrawn_predecessor_keeps_successor_unsatisfied() {
     register_plan(&repo, "plan02");
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
     // plan04 depends on plan02.
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    std::fs::write(repo.join(".mine/plan/plan04-fixture.md"), "# plan04\n").unwrap();
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    git(&repo, &["add", "--", ".mine/plan/plan04-fixture.md"]);
+    git(
+        &repo,
+        &["commit", "--quiet", "-m", "explicit successor body"],
+    );
     let outcome = dispatch(
         &repo,
         &[
             "plan",
             "add",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "73",
             "--id",
             // mine-release-allow-plan-reference: plan-id lifecycle fixture
             "plan04",
             "--path",
             // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            "docs/plan/plan04-fixture.md",
+            ".mine/plan/plan04-fixture.md",
             "--title",
             "successor",
             "--design-ref",
-            "docs/design/index.md",
+            ".mine/design/index.md",
             "--write",
             "tests/",
             "--hard",
@@ -442,20 +532,15 @@ fn withdrawn_predecessor_keeps_successor_unsatisfied() {
     );
     assert_eq!(outcome.exit_code, 0);
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    std::fs::write(repo.join("docs/plan/plan04-fixture.md"), "# plan04\n").unwrap();
     assert_eq!(
-        dispatch(
-            &repo,
-            // mine-release-allow-plan-reference: plan-id lifecycle fixture
-            &["plan", "withdraw", "--id", "plan02", "--reason", "retired"]
-        )
-        .exit_code,
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        withdraw_plan(&repo, "plan02", "retired", 74).exit_code,
         0
     );
     // The successor releases to BLOCKED: a withdrawn predecessor is never
     // satisfied.
     // mine-release-allow-plan-reference: plan-id lifecycle fixture
-    release_plan(&repo, "plan04");
+    release_plan(&repo, "plan04", 75);
     assert_eq!(
         // mine-release-allow-plan-reference: plan-id lifecycle fixture
         graph(&repo).get("plan04").unwrap().status.as_str(),
@@ -469,8 +554,10 @@ fn closure_accepts_withdrawn_and_rejected_but_not_unresolved() {
     use mine::domain::status::PlanStatus;
     // A graph whose only non-ACCEPTED node is WITHDRAWN closes cleanly.
     let (tmp, repo) = common::seeded_repo(vec![
-        common::node("01", PlanStatus::Accepted, &[], &[]),
-        common::node("02", PlanStatus::Withdrawn, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan01", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan02", PlanStatus::Withdrawn, &[], &[]),
     ]);
     let outcome = dispatch(&repo, &["workspace", "close"]);
     assert_eq!(outcome.exit_code, 0, "withdrawn-only remainder closes");
@@ -479,9 +566,12 @@ fn closure_accepts_withdrawn_and_rejected_but_not_unresolved() {
 
     // A READY node still blocks closure and the message names its status.
     let (tmp, repo) = common::seeded_repo(vec![
-        common::node("01", PlanStatus::Accepted, &[], &[]),
-        common::node("02", PlanStatus::Withdrawn, &[], &[]),
-        common::node("03", PlanStatus::Ready, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan01", PlanStatus::Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan02", PlanStatus::Withdrawn, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan03", PlanStatus::Ready, &[], &[]),
     ]);
     let outcome = dispatch(&repo, &["workspace", "close"]);
     assert_eq!(outcome.exit_code, 4);
@@ -502,21 +592,29 @@ fn closure_accepts_withdrawn_and_rejected_but_not_unresolved() {
 fn ready_frontier_and_wave_exclude_withdrawn_nodes() {
     use mine::domain::status::PlanStatus;
     let (tmp, repo) = common::seeded_repo(vec![
-        common::node("01", PlanStatus::Withdrawn, &[], &[]),
-        common::node("02", PlanStatus::Ready, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan01", PlanStatus::Withdrawn, &[], &[]),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        common::node("plan02", PlanStatus::Ready, &[], &[]),
     ]);
     let outcome = dispatch(&repo, &["graph", "ready", "--format", "json"]);
     assert_eq!(outcome.exit_code, 0);
     let env = envelope(&outcome);
     let ready = env["data"]["ready"].to_string();
     assert!(
-        ready.contains("02") && !ready.contains("01"),
+        // mine-release-allow-plan-reference: private canonical withdrawal fixture
+        ready.contains("plan02") && !ready.contains("plan01"),
         "ready: {ready}"
     );
     let outcome = dispatch(&repo, &["graph", "wave", "--format", "json"]);
     assert_eq!(outcome.exit_code, 0);
     let env = envelope(&outcome);
     let wave = env["data"]["wave"].to_string();
-    assert!(wave.contains("02") && !wave.contains("01"), "wave: {wave}");
+    // mine-release-allow-plan-reference: private canonical withdrawal fixture
+    assert!(
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        wave.contains("plan02") && !wave.contains("plan01"),
+        "wave: {wave}"
+    );
     drop(tmp);
 }

@@ -15,21 +15,291 @@ use crate::domain::error::{MineError, MineResult};
 use crate::domain::path::{is_within, normalize_repo_relative};
 use crate::domain::status::PlanStatus;
 
-/// The only graph schema emitted by the current writer. Adds optional node
-/// fields (planning scope, release readiness audit, withdrawal evidence) over
-/// v3; v3 graphs upgrade implicitly on the next lifecycle mutation.
-pub const CURRENT_GRAPH_SCHEMA_VERSION: u32 = 4;
+/// Native ownership (v5), acceptance (v6), and durable preparation (v7).
+/// Earlier readers refuse this marker rather than discard unknown authority.
+pub const CURRENT_GRAPH_SCHEMA_VERSION: u32 = 7;
 
 /// The immediately preceding wire schema: accepted for reading and upgraded
 /// to the current schema by the next lifecycle mutation (no field derivation
 /// is needed — the new fields are optional with defaults).
-pub const PREVIOUS_GRAPH_SCHEMA_VERSION: u32 = 3;
+pub const PREVIOUS_GRAPH_SCHEMA_VERSION: u32 = 6;
+
+/// Readers retain all supported historical facts; a read never invents evidence.
+pub fn is_supported_graph_schema(version: u32) -> bool {
+    (3..=CURRENT_GRAPH_SCHEMA_VERSION).contains(&version)
+}
 
 /// The fail-closed provenance schema upgraded by Plan branch-anchor repair.
 pub const ANCHOR_REPAIR_GRAPH_SCHEMA_VERSION: u32 = 2;
 
 /// The numeric bootstrap schema accepted only by the provenance repair path.
 pub const LEGACY_GRAPH_SCHEMA_VERSION: u32 = 1;
+
+/// Full SHA-256 identity, not proof that any particular producer was trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct Sha256(String);
+
+impl Sha256 {
+    pub fn new(value: impl Into<String>) -> crate::domain::error::ContractResult<Self> {
+        let value = value.into();
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(crate::domain::error::ContractError::new(
+                "sha256",
+                "expected 64 lowercase hexadecimal digits",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for Sha256 {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<Sha256> for String {
+    fn from(value: Sha256) -> Self {
+        value.0
+    }
+}
+
+/// Normalized, lexical repository-relative path. IO consumers must additionally
+/// check real filesystem containment (including links) immediately before IO.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RepoPath(String);
+impl RepoPath {
+    pub fn new(value: impl Into<String>) -> crate::domain::error::ContractResult<Self> {
+        let value = value.into();
+        let normalized = normalize_repo_relative(&value).map_err(|_| {
+            crate::domain::error::ContractError::new(
+                "path",
+                "expected safe repository-relative path",
+            )
+        })?;
+        if value != normalized || value.chars().any(char::is_control) || value.contains(':') {
+            return Err(crate::domain::error::ContractError::new(
+                "path",
+                "expected canonical forward-slash relative path",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for RepoPath {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<RepoPath> for String {
+    fn from(value: RepoPath) -> Self {
+        value.0
+    }
+}
+
+/// Declared file evidence. Only the IO owner verifies these bytes on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileIdentity {
+    pub path: RepoPath,
+    pub bytes: u64,
+    pub sha256: Sha256,
+}
+
+/// Exact native-sized OID syntax. Only fresh Git evidence proves object/type
+/// and repository-native width; this value alone never grants authority.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct CommitId(String);
+impl CommitId {
+    pub fn new(value: impl Into<String>) -> crate::domain::error::ContractResult<Self> {
+        let value = value.into();
+        if !matches!(value.len(), 40 | 64)
+            || !value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(crate::domain::error::ContractError::new(
+                "commit_id",
+                "expected full lowercase SHA-1 or SHA-256 object ID",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for CommitId {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<CommitId> for String {
+    fn from(value: CommitId) -> Self {
+        value.0
+    }
+}
+
+/// RFC3339 timestamp with an explicit UTC offset; preserves observed text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UtcTimestamp(String);
+impl UtcTimestamp {
+    pub fn new(value: impl Into<String>) -> crate::domain::error::ContractResult<Self> {
+        let value = value.into();
+        let parsed =
+            time::OffsetDateTime::parse(&value, &time::format_description::well_known::Rfc3339)
+                .map_err(|_| {
+                    crate::domain::error::ContractError::new(
+                        "timestamp",
+                        "expected RFC3339 UTC timestamp",
+                    )
+                })?;
+        if parsed.offset() != time::UtcOffset::UTC || value.ends_with("-00:00") {
+            return Err(crate::domain::error::ContractError::new(
+                "timestamp",
+                "timestamp must use UTC",
+            ));
+        }
+        Ok(Self(value))
+    }
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn instant(&self) -> time::OffsetDateTime {
+        time::OffsetDateTime::parse(&self.0, &time::format_description::well_known::Rfc3339)
+            .expect("validated timestamp")
+    }
+}
+impl TryFrom<String> for UtcTimestamp {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+impl From<UtcTimestamp> for String {
+    fn from(value: UtcTimestamp) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanIdentityFields {
+    pub repository_id: String,
+    pub workspace_id: String,
+    pub plan_id: String,
+    pub plan_path: RepoPath,
+    /// None is explicitly absent historical evidence, never an inferred digest.
+    pub body_sha256: Option<Sha256>,
+    pub lineage_id: String,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PlanIdentityFields")]
+pub struct PlanIdentity(PlanIdentityFields);
+impl PlanIdentity {
+    pub fn new(fields: PlanIdentityFields) -> crate::domain::error::ContractResult<Self> {
+        use crate::domain::error::{ContractError, contract_text};
+        contract_text("repository_id", &fields.repository_id)?;
+        contract_text("workspace_id", &fields.workspace_id)?;
+        let branch = crate::domain::plan_id::registered_plan_branch(
+            &fields.workspace_id,
+            &fields.plan_id,
+            fields.plan_path.as_str(),
+        )
+        .map_err(|_| ContractError::new("plan_identity", "invalid exact Plan ID/path binding"))?;
+        let lineage = if crate::domain::plan_id::is_exact_bootstrap_node(
+            &fields.workspace_id,
+            &fields.plan_id,
+            fields.plan_path.as_str(),
+        ) {
+            // mine-release-allow-plan-reference: canonical bootstrap identity
+            "plan01".to_string()
+        } else {
+            crate::domain::plan_id::CanonicalPlanId::parse(&fields.plan_id)
+                .map_err(|_| ContractError::new("plan_id", "invalid canonical Plan ID"))?
+                .lineage_id()
+        };
+        if branch != fields.branch || lineage != fields.lineage_id {
+            return Err(ContractError::new(
+                "plan_identity",
+                "branch or lineage does not match exact Plan identity",
+            ));
+        }
+        Ok(Self(fields))
+    }
+    pub fn fields(&self) -> &PlanIdentityFields {
+        &self.0
+    }
+    /// Relative evidence namespace derived from this exact frozen Plan path.
+    /// IO admission still verifies that path against the configured layout.
+    pub fn verification_directory(&self) -> RepoPath {
+        let (root, _) = self
+            .0
+            .plan_path
+            .as_str()
+            .rsplit_once('/')
+            .expect("validated Plan parent");
+        RepoPath::new(format!("{root}/reports/verification/{}", self.0.plan_id))
+            .expect("derived from validated Plan identity")
+    }
+}
+impl TryFrom<PlanIdentityFields> for PlanIdentity {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(fields: PlanIdentityFields) -> Result<Self, Self::Error> {
+        Self::new(fields)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyIdentityFields {
+    pub design_references: Vec<RepoPath>,
+    pub sha256: Sha256,
+}
+
+/// Identity of a policy; approval and actual digest matching remain a resolver's
+/// responsibility, not a flag callers can set on this type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "PolicyIdentityFields")]
+pub struct PolicyIdentity(PolicyIdentityFields);
+impl PolicyIdentity {
+    pub fn new(fields: PolicyIdentityFields) -> crate::domain::error::ContractResult<Self> {
+        let unique: HashSet<_> = fields.design_references.iter().collect();
+        if unique.is_empty() || unique.len() != fields.design_references.len() {
+            return Err(crate::domain::error::ContractError::new(
+                "policy.design_references",
+                "expected nonempty distinct Design references",
+            ));
+        }
+        Ok(Self(fields))
+    }
+    pub fn fields(&self) -> &PolicyIdentityFields {
+        &self.0
+    }
+}
+impl TryFrom<PolicyIdentityFields> for PolicyIdentity {
+    type Error = crate::domain::error::ContractError;
+    fn try_from(fields: PolicyIdentityFields) -> Result<Self, Self::Error> {
+        Self::new(fields)
+    }
+}
 
 /// The execution-graph aggregate root for an active plan workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -156,6 +426,68 @@ pub struct PlanNode {
     /// Repository-relative lineage worktree locator.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub worktree_path: String,
+    /// Registration-time immutable identity; None is absent historical evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_sha256: Option<Sha256>,
+    /// Immutable semantic baseline. Explicit legacy activation retains the
+    /// absent historical body and original conservative mapping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<crate::domain::ownership::OwnershipContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership_policy: Option<OwnershipPolicyProvenance>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clarifications: Vec<crate::domain::ownership::ClarificationRecord>,
+    /// Portable terminal evidence, separate from the recoverable local mirror.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance: Option<crate::domain::lifecycle_operation::LifecycleOperation>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub preparations: Vec<PreparationGeneration>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_preparation_generation: Option<u64>,
+}
+
+/// An explicit preparation request mode; not a new Plan lifecycle state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparationMode {
+    Initial,
+    Reprepare,
+    Recover,
+}
+
+/// Append-only completed preparation. Absolute machine paths are not authority.
+/// Root and branch commits are distinct, especially for compensation lineages.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparationGeneration {
+    pub ordinal: u64,
+    pub operation_id: crate::domain::lifecycle_operation::OperationId,
+    pub actor: String,
+    pub prepared_at: UtcTimestamp,
+    pub plan: PlanIdentity,
+    pub policy_sha256: Sha256,
+    pub worktree: RepoPath,
+    pub prepared_branch_commit: CommitId,
+    pub observed_root_commit: CommitId,
+    pub observed_graph_revision: u64,
+}
+
+/// Exact approved policy observation. ADR and graph revisions are independent.
+/// Decoding this record is not approval: adapters re-observe authoritative ADR,
+/// body, policy bytes and Root ownership before using it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnershipPolicyProvenance {
+    pub repository_id: String,
+    pub workspace_id: String,
+    pub policy_path: RepoPath,
+    pub policy_sha256: Sha256,
+    pub adr_id: String,
+    pub adr_path: RepoPath,
+    pub adr_body_sha256: Sha256,
+    pub adr_registry_revision: u64,
+    pub approval_actor: String,
+    pub admitted_graph_revision: u64,
 }
 
 fn serialize_graph_schema_version<S>(version: &u32, serializer: S) -> Result<S::Ok, S::Error>
@@ -277,28 +609,127 @@ impl PlanWorkspace {
     /// # Errors
     /// Returns [`MineError::PlanNotFound`] if either id is unknown.
     pub fn is_hard_ancestor(&self, ancestor_id: &str, descendant_id: &str) -> MineResult<bool> {
-        if self.get(ancestor_id).is_none() {
-            return Err(MineError::PlanNotFound {
-                plan_id: ancestor_id.to_string(),
+        GraphIndex::new(self)?.is_hard_ancestor(ancestor_id, descendant_id)
+    }
+}
+
+/// Declaration-ranked adjacency/index membership, built once per algorithm.
+/// This is derived data, never serialized into the authoritative graph.
+pub struct GraphIndex {
+    ids: Vec<String>,
+    positions: std::collections::HashMap<String, usize>,
+    predecessors: Vec<Vec<usize>>,
+    children: Vec<Vec<usize>>,
+    ancestry: std::cell::RefCell<std::collections::HashMap<(usize, usize), bool>>,
+}
+
+impl GraphIndex {
+    pub fn new(workspace: &PlanWorkspace) -> MineResult<Self> {
+        let ids: Vec<_> = workspace.plans.iter().map(|node| node.id.clone()).collect();
+        let positions: std::collections::HashMap<_, _> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (id.clone(), i))
+            .collect();
+        if positions.len() != ids.len() {
+            return Err(MineError::GraphInvalid {
+                detail: "duplicate plan id".to_string(),
             });
         }
-        let mut visited = HashSet::new();
-        let mut stack = vec![descendant_id];
-        while let Some(cur) = stack.pop() {
-            if !visited.insert(cur) {
-                continue;
-            }
-            let node = self.get(cur).ok_or_else(|| MineError::PlanNotFound {
-                plan_id: cur.to_string(),
-            })?;
-            for pred in &node.hard_predecessors {
-                if pred == ancestor_id {
-                    return Ok(true);
-                }
-                stack.push(pred);
+        let mut predecessors = vec![Vec::new(); ids.len()];
+        let mut children = vec![Vec::new(); ids.len()];
+        for (child, node) in workspace.plans.iter().enumerate() {
+            for predecessor in &node.hard_predecessors {
+                let parent =
+                    *positions
+                        .get(predecessor)
+                        .ok_or_else(|| MineError::PlanNotFound {
+                            plan_id: predecessor.clone(),
+                        })?;
+                predecessors[child].push(parent);
+                children[parent].push(child);
             }
         }
-        Ok(false)
+        Ok(Self {
+            ids,
+            positions,
+            predecessors,
+            children,
+            ancestry: std::cell::RefCell::new(std::collections::HashMap::new()),
+        })
+    }
+
+    pub fn position(&self, id: &str) -> MineResult<usize> {
+        self.positions
+            .get(id)
+            .copied()
+            .ok_or_else(|| MineError::PlanNotFound {
+                plan_id: id.to_string(),
+            })
+    }
+
+    pub fn topological_sort(&self) -> MineResult<Vec<String>> {
+        let mut degrees: Vec<_> = self.predecessors.iter().map(Vec::len).collect();
+        let mut queue: std::collections::VecDeque<_> = degrees
+            .iter()
+            .enumerate()
+            .filter_map(|(i, d)| (*d == 0).then_some(i))
+            .collect();
+        let mut emitted = vec![false; degrees.len()];
+        let mut order = Vec::with_capacity(degrees.len());
+        while let Some(parent) = queue.pop_front() {
+            emitted[parent] = true;
+            order.push(self.ids[parent].clone());
+            // Children were inserted in declaration order, matching the old
+            // FIFO/newly-zero semantics without scanning the entire graph.
+            for child in &self.children[parent] {
+                degrees[*child] -= 1;
+                if degrees[*child] == 0 {
+                    queue.push_back(*child);
+                }
+            }
+        }
+        if order.len() != self.ids.len() {
+            return Err(MineError::GraphCycle {
+                cycle: self
+                    .ids
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !emitted[*i])
+                    .map(|(_, id)| id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+            });
+        }
+        Ok(order)
+    }
+
+    pub fn is_hard_ancestor(&self, ancestor: &str, descendant: &str) -> MineResult<bool> {
+        let pair = (self.position(ancestor)?, self.position(descendant)?);
+        if let Some(found) = self.ancestry.borrow().get(&pair) {
+            return Ok(*found);
+        }
+        let mut visited = vec![false; self.ids.len()];
+        let mut stack = vec![pair.1];
+        let mut found = false;
+        while let Some(node) = stack.pop() {
+            if visited[node] {
+                continue;
+            }
+            visited[node] = true;
+            for predecessor in &self.predecessors[node] {
+                if *predecessor == pair.0 {
+                    found = true;
+                    break;
+                }
+                stack.push(*predecessor);
+            }
+            if found {
+                break;
+            }
+        }
+        self.ancestry.borrow_mut().insert(pair, found);
+        Ok(found)
     }
 }
 
@@ -337,6 +768,13 @@ mod tests {
             adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
+            body_sha256: None,
+            ownership: None,
+            ownership_policy: None,
+            clarifications: vec![],
+            acceptance: None,
+            preparations: vec![],
+            started_preparation_generation: None,
         }
     }
 

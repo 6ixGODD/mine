@@ -4,7 +4,7 @@
 //! Distribution and Skill-contract integration tests.
 //!
 //! These tests verify the final Skill contract (MCP-first / CLI-fallback
-//! against the twelve accepted MCP tools), the distribution structure for
+//! against the actual published MCP tools), the distribution structure for
 //! Claude Code / Codex / Pi / OpenCode, the deterministic synchronization
 //! mechanism, embedded Skill payloads, and drift detection.
 //!
@@ -19,6 +19,8 @@ mod common;
 mod contract;
 #[path = "distribution/embedded.rs"]
 mod embedded;
+#[path = "distribution/native_contract.rs"]
+mod native_contract;
 #[path = "distribution/structure.rs"]
 mod structure;
 #[path = "distribution/sync.rs"]

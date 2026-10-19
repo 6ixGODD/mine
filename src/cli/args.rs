@@ -115,6 +115,16 @@ pub enum Commands {
         #[command(subcommand)]
         action: PlanCmd,
     },
+    /// Inspect a recoverable lifecycle operation (CLI only).
+    Operation {
+        #[command(subcommand)]
+        action: OperationCmd,
+    },
+    /// Capture, record or check native verification evidence (never runs checks).
+    Verification {
+        #[command(subcommand)]
+        action: VerificationCmd,
+    },
     /// Design backup / validation / status.
     Design {
         #[command(subcommand)]
@@ -140,8 +150,12 @@ pub enum Commands {
         #[command(subcommand)]
         action: DistCmd,
     },
-    /// Release preflight (validation only).
-    Release,
+    /// Live release preflight or explicitly selected read-only phase diagnostics.
+    Release {
+        /// Existing Release operation; diagnostic only, never current gate admission.
+        #[arg(long, value_name = "UUID")]
+        operation_id: Option<String>,
+    },
     /// Read-only validation scans.
     Scan {
         #[command(subcommand)]
@@ -155,9 +169,71 @@ pub enum Commands {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum OperationCmd {
+    /// Finalize independently verified/cleaned acceptance through its checkpoint.
+    Finalize {
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+        #[arg(long, value_name = "PATH")]
+        input: String,
+    },
+    /// Record one objectively observed typed stage; never performs its effects.
+    Stage {
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+        #[arg(long, value_name = "PATH")]
+        input: String,
+    },
+    /// Begin a pinned independent-review closure; never merges or runs checks.
+    Begin {
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+        /// Root-contained strict JSON actor and typed closure intent.
+        #[arg(long, value_name = "PATH")]
+        input: String,
+    },
+    /// Query one exact operation; never repeats its effects.
+    Show {
+        #[arg(long, value_name = "UUID")]
+        operation_id: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum VerificationCmd {
+    /// Capture real input identities before the runner executes its check.
+    Capture {
+        /// Root-relative `.mine/build/<exact-plan-id>/<output-class>/<file>`.
+        #[arg(long, value_name = "PATH")]
+        input: String,
+    },
+    /// Record a previously captured, externally observed run.
+    Record {
+        /// Root-relative `.mine/build/<exact-plan-id>/<output-class>/<file>`.
+        #[arg(long, value_name = "PATH")]
+        input: String,
+    },
+    /// Check current applicability; success output is not necessarily a pass.
+    Check {
+        #[arg(long, value_name = "PATH")]
+        receipt: String,
+        /// Root-relative `.mine/build/<exact-plan-id>/<output-class>/<file>`.
+        #[arg(long, value_name = "PATH")]
+        input: String,
+        #[arg(long, value_name = "PATH")]
+        policy: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum WorkspaceCmd {
-    /// Open the temporary docs/plan/ workspace.
-    Open,
+    /// Open the configured temporary Plan workspace (fresh default: .mine/plan/).
+    Open {
+        #[arg(long, value_name = "ACTOR")]
+        actor: String,
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+    },
     /// Show workspace status.
     Status,
     /// Close and purge the workspace.
@@ -168,13 +244,32 @@ pub enum WorkspaceCmd {
 pub enum GraphCmd {
     /// Validate the execution graph.
     Validate,
-    /// Render the graph to Markdown.
-    Render,
+    /// Restore only a missing checkpoint-proven Markdown graph view.
+    Render {
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+    },
     /// Repair supported schema-v1 Plan provenance and upgrade the graph.
     RepairProvenance {
+        #[arg(long, value_name = "ACTOR")]
+        actor: String,
         /// Authoritative graph revision expected by the caller.
         #[arg(long, value_name = "REVISION")]
         expected_revision: u64,
+    },
+    /// Repair one invalid, unstarted compensation predecessor list.
+    RepairCompensationPredecessors {
+        #[arg(long, value_name = "ACTOR")]
+        actor: String,
+        /// Canonical compensation Plan ID.
+        #[arg(long, value_name = "ID")]
+        id: String,
+        /// Authoritative graph revision expected by the caller.
+        #[arg(long, value_name = "REVISION")]
+        expected_revision: u64,
+        /// Non-empty operator reason returned as repair evidence.
+        #[arg(long, value_name = "TEXT")]
+        reason: String,
     },
     /// Show graph status (revision, branches, plan count).
     Status,
@@ -192,6 +287,15 @@ pub enum GraphCmd {
 
 #[derive(Args, Debug)]
 pub struct PlanAddArgs {
+    /// Explicit initiating actor, not Git identity or stored owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
+    /// Contained JSON semantic declarations and policy/ADR selectors.
+    #[arg(long, value_name = "PATH")]
+    pub ownership_input: Option<String>,
     /// Plan id (e.g. "01").
     #[arg(long, value_name = "ID")]
     pub id: String,
@@ -204,7 +308,8 @@ pub struct PlanAddArgs {
     /// Design reference (repeatable).
     #[arg(long = "design-ref", value_name = "REF")]
     pub design_refs: Vec<String>,
-    /// Exclusive write path (repeatable).
+    /// Exclusive write path (repeatable). Conservative registration requires a
+    /// nonempty mapping; a verified semantic input may supply it instead.
     #[arg(long, value_name = "PATH")]
     pub write: Vec<String>,
     /// Hard predecessor id (repeatable).
@@ -219,10 +324,12 @@ pub struct PlanAddArgs {
 pub enum PlanCmd {
     /// Register a new DRAFT plan.
     Add(PlanAddArgs),
+    /// Append an approved, body-bound ownership clarification (CLI only).
+    Clarify(PlanClarifyArgs),
     /// Show a plan node.
     Show(PlanShowArgs),
     /// Prepare or reuse the registered linked worktree.
-    Prepare(PlanShowArgs),
+    Prepare(PlanPrepareArgs),
     /// Start a plan (DRAFT/READY -> IN_PROGRESS).
     Start(PlanStartArgs),
     /// Mark a plan IMPLEMENTED.
@@ -247,13 +354,49 @@ pub struct PlanShowArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct PlanClarifyArgs {
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
+    /// Contained typed JSON declaration/identity/actor/reason/mapping input.
+    #[arg(long, value_name = "PATH")]
+    pub input: String,
+}
+
+#[derive(Args, Debug)]
+pub struct PlanPrepareArgs {
+    /// Exact registered Plan id.
+    #[arg(long, value_name = "ID")]
+    pub id: String,
+    /// Original observed graph revision; never silently refreshed.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
+    /// Identity retained across interrupted preparation and checkpoint recovery.
+    #[arg(long, value_name = "UUID")]
+    pub operation_id: String,
+    /// Explicit attributable caller; not Git identity or a future start owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Explicit safe READY baseline/policy refresh; never resets divergent work.
+    #[arg(long, conflicts_with = "recover_preparation")]
+    pub reprepare: bool,
+    /// Establish missing legacy preparation from fresh exact initial evidence.
+    #[arg(long, conflicts_with = "reprepare")]
+    pub recover_preparation: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct PlanStartArgs {
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
-    /// Owner label (default: "default").
+    /// Explicit owner label and initiating actor; no inferred default.
     #[arg(long, value_name = "OWNER")]
-    pub owner: Option<String>,
+    pub owner: String,
     /// Run id (default: "default-run").
     #[arg(long = "run-id", value_name = "ID")]
     pub run_id: Option<String>,
@@ -261,6 +404,12 @@ pub struct PlanStartArgs {
 
 #[derive(Args, Debug)]
 pub struct PlanImplementedArgs {
+    /// Explicit initiating actor, not Git identity or stored owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
@@ -274,16 +423,28 @@ pub struct PlanImplementedArgs {
 
 #[derive(Args, Debug)]
 pub struct PlanAcceptArgs {
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
-    /// Review report path.
+    /// Existing independently reviewed closure operation.
+    #[arg(long, value_name = "UUID")]
+    pub operation_id: String,
+    /// Root-contained typed finalize request and current check selections.
     #[arg(long, value_name = "PATH")]
-    pub review: Option<String>,
+    pub input: String,
 }
 
 #[derive(Args, Debug)]
 pub struct PlanRejectArgs {
+    /// Explicit initiating actor, not Git identity or stored owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
@@ -300,6 +461,12 @@ pub struct PlanRejectArgs {
 
 #[derive(Args, Debug)]
 pub struct PlanReleaseArgs {
+    /// Explicit initiating actor, not Git identity or stored owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
@@ -307,6 +474,12 @@ pub struct PlanReleaseArgs {
 
 #[derive(Args, Debug)]
 pub struct PlanRewireCompensationArgs {
+    /// Explicit initiating actor, not Git identity or stored owner.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Rejected plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,
@@ -314,6 +487,15 @@ pub struct PlanRewireCompensationArgs {
 
 #[derive(Args, Debug)]
 pub struct PlanWithdrawArgs {
+    /// Exact operation identity, retained across an interrupted withdrawal.
+    #[arg(long, value_name = "UUID")]
+    pub operation_id: String,
+    /// Attributable initiating actor; no inferred identity.
+    #[arg(long, value_name = "ACTOR")]
+    pub actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    #[arg(long, value_name = "REVISION")]
+    pub expected_revision: u64,
     /// Plan id.
     #[arg(long, value_name = "ID")]
     pub id: String,

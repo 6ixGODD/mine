@@ -3,10 +3,12 @@
 
 //! End-to-end CLI integration tests.
 //!
-//! These drive `mine::cli::dispatch` against temporary repositories (and the
-//! real repository graph for read-only validation) and assert the stable JSON
-//! envelope contract, exit codes, human output, optimistic-concurrency
-//! behavior, and that no Git mutation occurs.
+//! These drive `mine::cli::dispatch` against private repositories and assert
+//! envelopes, refusal boundaries and native checkpoint/recovery behavior.
+
+// This binary uses a subset of the shared private-repository fixture helpers.
+#[allow(dead_code)]
+mod common;
 
 use std::path::PathBuf;
 
@@ -48,37 +50,7 @@ fn development_graph_fixture() -> PathBuf {
 }
 
 fn init_git_repo(root: &std::path::Path) {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["init", "--quiet"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["config", "user.email", "t@t"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["config", "user.name", "t"])
-        .status()
-        .unwrap();
-    std::fs::write(root.join("README.md"), "x\n").unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["add", "README.md"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root)
-        .args(["commit", "--quiet", "-m", "init"])
-        .status()
-        .unwrap();
+    init_git_repo_with_branch(root, "master");
 }
 
 #[test]
@@ -129,7 +101,7 @@ fn init_in_absent_repo_is_idempotent_and_json_stable() {
 }
 
 #[test]
-fn init_backs_up_legacy_unmarked_design_root() {
+fn init_preserves_unrelated_user_design_without_claiming_or_moving_it() {
     let root = tempfile::tempdir().unwrap();
     init_git_repo(root.path());
     let repo = root.path().to_str().unwrap();
@@ -141,17 +113,13 @@ fn init_backs_up_legacy_unmarked_design_root() {
     .unwrap();
 
     let outcome = cli::dispatch(&run(repo, &["init", "--format", "json"]), "mine");
-    assert_eq!(
-        outcome.exit_code, 0,
-        "init backs up and continues -> exit 0"
-    );
+    assert_eq!(outcome.exit_code, 0, "{}", envelope_json(&outcome));
     let env = envelope_json(&outcome);
     assert_eq!(env["ok"], true);
-    // A backed-up-design action was recorded.
+    // User docs are not the configured owned namespace and must remain untouched.
     let actions = env["data"]["actions"].as_array().unwrap();
     let backed_up = actions.iter().any(|a| a["kind"] == "backed-up-design");
-    assert!(backed_up, "init recorded a backed-up-design action");
-    // The legacy content was moved into a backup directory.
+    assert!(!backed_up, "init must not move unrelated user docs");
     let docs_dir = root.path().join("docs");
     let backups: Vec<_> = std::fs::read_dir(&docs_dir)
         .unwrap()
@@ -162,13 +130,16 @@ fn init_backs_up_legacy_unmarked_design_root() {
                 .starts_with("design-backup-")
         })
         .collect();
-    assert_eq!(backups.len(), 1, "exactly one design backup created");
-    let legacy_preserved = std::fs::read_to_string(backups[0].path().join("legacy.md")).unwrap();
-    assert_eq!(legacy_preserved, "legacy");
-    // A fresh MINE-managed design root was created.
+    assert!(backups.is_empty(), "no unsolicited user-document backup");
+    assert_eq!(
+        std::fs::read(root.path().join("docs/design/legacy.md")).unwrap(),
+        b"legacy"
+    );
+    assert!(!root.path().join("docs/design/.mine-design.toml").exists());
+    // Only the canonical managed namespace was created.
     assert!(
         root.path()
-            .join("docs")
+            .join(".mine")
             .join("design")
             .join(".mine-design.toml")
             .exists()
@@ -190,136 +161,231 @@ fn status_reports_graph_and_git_evidence() {
 
 #[test]
 fn graph_validate_detects_missing_view_and_render_repairs() {
-    let tmp = temp_copy_of_real_graph();
-    // Drop the generated view: validation fails naming the non-destructive
-    // repair.
-    std::fs::remove_file(TomlStore::new(tmp.path()).md_path()).unwrap();
-    let outcome = cli::dispatch(
+    let tmp = checkpointed_fixture();
+    let store = TomlStore::new(tmp.path());
+    let source = std::fs::read(store.toml_path()).unwrap();
+    let head = fixture_git(tmp.path(), &["rev-parse", "HEAD"]);
+    std::fs::remove_file(store.md_path()).unwrap();
+    let invalid = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &["graph", "validate", "--format", "json"],
         ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 4, "missing view is a validation failure");
-    let env = envelope_json(&outcome);
-    let detail = env["error"]["message"].as_str().unwrap();
+    assert_eq!(invalid.exit_code, 4);
+    let envelope = envelope_json(&invalid);
+    let detail = envelope["error"]["message"].as_str().unwrap();
     assert!(
         detail.contains("generated view missing") && detail.contains("mine graph render"),
-        "error names the repair: {detail}"
+        "{detail}"
     );
-    // The repair is non-destructive: render, then validate passes.
-    let outcome = cli::dispatch(
-        &run(tmp.path().to_str().unwrap(), &["graph", "render"]),
+    let restored = cli::dispatch(
+        &run(
+            tmp.path().to_str().unwrap(),
+            &[
+                "graph",
+                "render",
+                "--expected-revision",
+                "73",
+                "--format",
+                "json",
+            ],
+        ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 0);
-    let outcome = cli::dispatch(
+    assert_eq!(restored.exit_code, 0, "{}", envelope_json(&restored));
+    let validated = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &["graph", "validate", "--format", "json"],
         ),
         "mine",
     );
-    assert_eq!(
-        outcome.exit_code, 0,
-        "real graph must validate after render"
-    );
-    let env = envelope_json(&outcome);
-    assert_eq!(env["ok"], true);
-    assert!(env["data"]["plans"].as_u64().unwrap() >= 9);
-    // A hand-edited view is detected as stale.
-    let store = TomlStore::new(tmp.path());
-    let md = std::fs::read_to_string(store.md_path()).unwrap();
-    std::fs::write(
-        store.md_path(),
-        format!(
-            "{md}hand-edited
-"
-        ),
-    )
-    .unwrap();
-    let outcome = cli::dispatch(
+    assert_eq!(validated.exit_code, 0, "{}", envelope_json(&validated));
+    assert_eq!(envelope_json(&validated)["data"]["plans"], 9);
+    assert_eq!(std::fs::read(store.toml_path()).unwrap(), source);
+    assert_eq!(fixture_git(tmp.path(), &["rev-parse", "HEAD"]), head);
+    let mut foreign = std::fs::read(store.md_path()).unwrap();
+    foreign.extend_from_slice(b"hand-edited\n");
+    std::fs::write(store.md_path(), &foreign).unwrap();
+    let invalid = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &["graph", "validate", "--format", "json"],
         ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 4, "hand-edited view is stale");
-    let env = envelope_json(&outcome);
+    assert_eq!(invalid.exit_code, 4);
     assert!(
-        env["error"]["message"]
+        envelope_json(&invalid)["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("generated view stale"),
-        "stale view distinguished"
+            .contains("generated view stale")
     );
+    let refused = cli::dispatch(
+        &run(
+            tmp.path().to_str().unwrap(),
+            &[
+                "graph",
+                "render",
+                "--expected-revision",
+                "73",
+                "--format",
+                "json",
+            ],
+        ),
+        "mine",
+    );
+    assert_ne!(refused.exit_code, 0, "foreign view must not be overwritten");
+    assert_eq!(std::fs::read(store.md_path()).unwrap(), foreign);
+    assert_eq!(std::fs::read(store.toml_path()).unwrap(), source);
+    assert_eq!(fixture_git(tmp.path(), &["rev-parse", "HEAD"]), head);
 }
 
 #[test]
 fn graph_render_is_deterministic_and_idempotent() {
-    // Operate on a temporary development-graph fixture so the test never
-    // mutates the stable tree, which intentionally has no graph workspace.
-    let tmp = tempfile::tempdir().unwrap();
-    let dst = tmp.path();
-    std::fs::create_dir_all(dst.join("docs/plan")).unwrap();
-    std::fs::copy(
-        development_graph_fixture(),
-        dst.join("docs/plan/execution-graph.toml"),
-    )
-    .unwrap();
-    let outcome1 = cli::dispatch(
+    let tmp = checkpointed_fixture();
+    let store = TomlStore::new(tmp.path());
+    let first = std::fs::read(store.md_path()).unwrap();
+    let source = std::fs::read(store.toml_path()).unwrap();
+    let head = fixture_git(tmp.path(), &["rev-parse", "HEAD"]);
+    for _ in 0..2 {
+        let outcome = cli::dispatch(
+            &run(
+                tmp.path().to_str().unwrap(),
+                &[
+                    "graph",
+                    "render",
+                    "--expected-revision",
+                    "73",
+                    "--format",
+                    "json",
+                ],
+            ),
+            "mine",
+        );
+        assert_eq!(outcome.exit_code, 0, "{}", envelope_json(&outcome));
+        assert_eq!(std::fs::read(store.md_path()).unwrap(), first);
+        assert_eq!(std::fs::read(store.toml_path()).unwrap(), source);
+        assert_eq!(fixture_git(tmp.path(), &["rev-parse", "HEAD"]), head);
+    }
+}
+
+/// Every fixture owns real Git, canonical bodies and its own graph identity.
+fn managed_graph_fixture() -> tempfile::TempDir {
+    use mine::domain::status::PlanStatus::*;
+    common::seeded_repo(vec![
+        // mine-release-allow-plan-reference: private canonical graph
+        common::node("plan01", Accepted, &[], &[]),
+        // mine-release-allow-plan-reference: private rejected lineage
+        common::rejected_node("plan02", "plan02-C01", &["plan01"]),
+        // mine-release-allow-plan-reference: inherited predecessors
+        common::node("plan02-C01", Accepted, &["plan01"], &[]),
+        // mine-release-allow-plan-reference: accepted dependency
+        common::node("plan03", Accepted, &["plan02-C01"], &[]),
+        // mine-release-allow-plan-reference: ready frontier
+        common::node("plan04", Ready, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: native checkpoint producer
+        common::node("plan05", Draft, &["plan03"], &[]),
+        // mine-release-allow-plan-reference: blocked dependency
+        common::node("plan06", Blocked, &["plan05"], &[]),
+        // mine-release-allow-plan-reference: disjoint ready scope
+        common::node("plan07", Ready, &[], &[]),
+        // mine-release-allow-plan-reference: disjoint ready scope
+        common::node("plan08", Ready, &[], &[]),
+    ])
+    .0
+}
+
+fn fixture_git(root: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap().trim().into()
+}
+
+fn checkpointed_fixture() -> tempfile::TempDir {
+    let directory = managed_graph_fixture();
+    let outcome = cli::dispatch(
         &run(
-            dst.to_str().unwrap(),
-            &["graph", "render", "--format", "json"],
+            directory.path().to_str().unwrap(),
+            &[
+                // mine-release-allow-plan-reference: real checkpoint before view restoration
+                "plan",
+                "release",
+                "--id",
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                "plan05",
+                "--actor",
+                "fixture-coordinator",
+                "--expected-revision",
+                "72",
+            ],
         ),
         "mine",
     );
-    assert_eq!(outcome1.exit_code, 0);
-    let store = TomlStore::new(dst);
-    let first = std::fs::read_to_string(store.md_path()).unwrap();
-    // Second render: byte-identical (deterministic + idempotent).
-    let _ = cli::dispatch(
-        &run(dst.to_str().unwrap(), &["graph", "render", "--quiet"]),
-        "mine",
-    );
-    let second = std::fs::read_to_string(store.md_path()).unwrap();
-    assert_eq!(
-        first, second,
-        "graph render is deterministic and idempotent"
-    );
+    assert_eq!(outcome.exit_code, 0, "{}", envelope_json(&outcome));
+    directory
 }
 
-/// Copies the real repository graph to a temp repo so write-path plan tests
-/// never touch the live `docs/plan/execution-graph.toml`.
-fn temp_copy_of_real_graph() -> tempfile::TempDir {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let tmp = tempfile::tempdir().unwrap();
-    let clone = std::process::Command::new("git")
-        .args(["clone", "--quiet", "--no-checkout"])
-        .arg(&repo_root)
-        .arg(tmp.path())
-        .status()
-        .unwrap();
-    assert!(clone.success(), "temporary graph repo clone must succeed");
-    std::fs::create_dir_all(tmp.path().join("docs/plan")).unwrap();
-    std::fs::create_dir_all(tmp.path().join(".mine")).unwrap();
-    let cfg = mine::cli::context::load_config(&repo_root).expect("real config exists");
-    std::fs::write(tmp.path().join(".mine/config.toml"), cfg.to_toml()).unwrap();
-    std::fs::copy(
-        development_graph_fixture(),
-        tmp.path().join("docs/plan/execution-graph.toml"),
-    )
-    .unwrap();
-    TomlStore::new(tmp.path()).render().unwrap();
-    tmp
+fn started_fixture() -> tempfile::TempDir {
+    use mine::domain::status::PlanStatus::*;
+    let directory = common::seeded_repo(vec![
+        // mine-release-allow-plan-reference: real prepared/startable parent
+        common::node("plan99", Ready, &[], &[]),
+        // mine-release-allow-plan-reference: successor depends on acceptance
+        common::node("plan99-01", Blocked, &["plan99"], &[]),
+    ])
+    .0;
+    let operation = uuid::Uuid::new_v4().to_string();
+    for args in [
+        // mine-release-allow-plan-reference: actual preparation
+        vec![
+            "plan",
+            "prepare",
+            "--id",
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan99",
+            "--actor",
+            "fixture-preparer",
+            "--operation-id",
+            &operation,
+            "--expected-revision",
+            "72",
+        ],
+        // mine-release-allow-plan-reference: actual start
+        vec![
+            "plan",
+            "start",
+            "--id",
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan99",
+            "--owner",
+            "cli-executor",
+            "--run-id",
+            "cli-fixture-run",
+            "--expected-revision",
+            "73",
+        ],
+    ] {
+        let outcome = cli::dispatch(&run(directory.path().to_str().unwrap(), &args), "mine");
+        assert_eq!(outcome.exit_code, 0, "{}", envelope_json(&outcome));
+    }
+    directory
 }
 
 #[test]
 fn cli_reads_writes_and_v3_repair_fail_closed_on_a_forged_anchor() {
-    let tmp = temp_copy_of_real_graph();
-    let toml_path = tmp.path().join("docs/plan/execution-graph.toml");
+    let tmp = managed_graph_fixture();
+    let toml_path = tmp.path().join(".mine/plan/execution-graph.toml");
     let mut workspace =
         toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
     workspace.plans[0].branch_anchor = "HEAD".to_string();
@@ -330,10 +396,25 @@ fn cli_reads_writes_and_v3_repair_fail_closed_on_a_forged_anchor() {
     let commands = [
         vec!["graph", "validate", "--format", "json"],
         vec!["graph", "status", "--format", "json"],
-        vec!["plan", "start", "--id", "02-1", "--format", "json"],
+        // mine-release-allow-plan-reference: private canonical CLI fixture
+        vec![
+            "plan",
+            "start",
+            "--id",
+            // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+            "plan02-C01",
+            "--owner",
+            "fixture-executor",
+            "--expected-revision",
+            revision.as_str(),
+            "--format",
+            "json",
+        ],
         vec![
             "graph",
             "repair-provenance",
+            "--actor",
+            "fixture-repairer",
             "--expected-revision",
             revision.as_str(),
             "--format",
@@ -353,15 +434,28 @@ fn cli_reads_writes_and_v3_repair_fail_closed_on_a_forged_anchor() {
 fn plan_start_refuses_non_ready_plan() {
     // Node is ACCEPTED (terminal): `plan start` must be refused. Operate
     // on a TEMP COPY so the write path is never exercised against the live
-    // repository graph. We snapshot the live graph bytes before/after and
+    // repository graph. We snapshot the development fixture bytes before/after and
     // assert they are unchanged (independent of the current revision number).
     let live_path = development_graph_fixture();
     let live_before = std::fs::read_to_string(&live_path).unwrap();
-    let tmp = temp_copy_of_real_graph();
+    let tmp = managed_graph_fixture();
     let outcome = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
-            &["plan", "start", "--id", "02-1", "--format", "json"],
+            // mine-release-allow-plan-reference: private canonical CLI fixture
+            &[
+                "plan",
+                "start",
+                "--id",
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                "plan02-C01",
+                "--owner",
+                "fixture-executor",
+                "--expected-revision",
+                "72",
+                "--format",
+                "json",
+            ],
         ),
         "mine",
     );
@@ -376,235 +470,151 @@ fn plan_start_refuses_non_ready_plan() {
     let live_after = std::fs::read_to_string(&live_path).unwrap();
     assert_eq!(
         live_before, live_after,
-        "live graph unchanged by the temp-copy test"
+        "development fixture unchanged by the temp-copy test"
     );
 }
 
 #[test]
-fn plan_accept_requires_implemented_state() {
-    // `plan accept` must be refused for a plan that is NOT `IMPLEMENTED`. We
-    // operate on a TEMP COPY of the real graph and inject an IN_PROGRESS
-    // synthetic plan node so the accept write path is exercised against the
-    // copy only, never the live repository graph. Snapshot the live graph
-    // bytes before/after to assert the live graph is byte-unchanged
-    // (independent of the bootstrap revision number).
-    let live_path = development_graph_fixture();
-    let live_before = std::fs::read_to_string(&live_path).unwrap();
-    let tmp = temp_copy_of_real_graph();
-    let toml_path = tmp.path().join("docs/plan/execution-graph.toml");
-    let mut ws = toml::from_str::<mine::domain::graph::PlanWorkspace>(
-        &std::fs::read_to_string(&toml_path).unwrap(),
+fn acceptance_begin_requires_implemented_state() {
+    let tmp = started_fixture();
+    let store = TomlStore::new(tmp.path());
+    let source = std::fs::read(store.toml_path()).unwrap();
+    let head = fixture_git(tmp.path(), &["rev-parse", "HEAD"]);
+    let request = serde_json::json!({"schema_version":1,"actor":"independent-reviewer","intent":{
+        // mine-release-allow-plan-reference: typed request cannot accept IN_PROGRESS
+        "kind":"acceptance","plan_id":"plan99","review":{"reviewed_tip":head,"report":{"path":".mine/plan/reports/plan99-fixture-review.md","sha256":"0".repeat(64),"bytes":1}}
+    }});
+    std::fs::create_dir_all(tmp.path().join(".mine/runtime")).unwrap();
+    std::fs::write(
+        tmp.path().join(".mine/runtime/acceptance-input.json"),
+        serde_json::to_vec(&request).unwrap(),
     )
     .unwrap();
-    use mine::domain::graph::PlanNode;
-    use mine::domain::status::PlanStatus;
-    let injected_revision = ws.revision;
-    // Node is ACCEPTED; reuse it as a resolved hard predecessor. The
-    // synthetic plan is IN_PROGRESS (not IMPLEMENTED); accepting it must fail.
-    ws.plans.push(PlanNode {
-        id: "99-test".to_string(),
-        path: "docs/plan/99-test.md".to_string(),
-        title: "99-test".to_string(),
-        branch: String::new(),
-        branch_anchor: String::new(),
-        status: PlanStatus::InProgress,
-        hard_predecessors: vec!["02-1".to_string()],
-        soft_predecessors: vec![],
-        design_references: vec!["docs/design/principles.md".to_string()],
-        exclusive_write_paths: vec!["tests/noop/".to_string()],
-        read_only_paths: vec![],
-        reserved_shared_paths: vec![],
-        implementation_report: String::new(),
-        review_report: String::new(),
-        implementation_commits: vec![],
-        owner: "tester".to_string(),
-        run_id: "test".to_string(),
-        started_at: "2026-07-23T00:00:00Z".to_string(),
-        updated_at: "2026-07-23T00:00:00Z".to_string(),
-        rejection_reason: String::new(),
-        compensating_plan: String::new(),
-        withdraw_reason: String::new(),
-        withdrawn_at: String::new(),
-        planning_scope: String::new(),
-        readiness_checked_at: String::new(),
-        adr_registry_revision: 0,
-        lineage_id: String::new(),
-        worktree_path: String::new(),
-    });
-    std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
-    TomlStore::new(tmp.path()).render().unwrap();
-
     let outcome = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &[
-                "plan", "accept", "--id", "99-test", "--review", "none.md", "--format", "json",
+                "operation",
+                "begin",
+                "--expected-revision",
+                "74",
+                "--input",
+                ".mine/runtime/acceptance-input.json",
+                "--format",
+                "json",
             ],
         ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 4);
-    let env = envelope_json(&outcome);
-    assert_eq!(env["error"]["code"], "MINE_INVALID_TRANSITION");
-    // Temp copy unchanged (rejected transition must not mutate): the injected
-    // 99-test plan is still present, and the revision string is unchanged
-    // (compare the bytes captured before dispatching).
-    let after = std::fs::read_to_string(&toml_path).unwrap();
-    let after_ws = toml::from_str::<mine::domain::graph::PlanWorkspace>(&after).unwrap();
-    assert_eq!(
-        after_ws.revision, injected_revision,
-        "temp graph revision unchanged by rejected accept"
+    assert_ne!(outcome.exit_code, 0);
+    let envelope = envelope_json(&outcome);
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("implemented"),
+        "{envelope}"
     );
-    assert!(after.contains("99-test"));
-    // Live graph fully untouched (byte snapshot before/after), and the injected
-    // test plan did not leak to it.
-    let live_after = std::fs::read_to_string(&live_path).unwrap();
-    assert_eq!(live_before, live_after, "live graph byte-unchanged");
-    assert!(!live_after.contains("99-test"));
+    assert_eq!(std::fs::read(store.toml_path()).unwrap(), source);
+    assert_eq!(fixture_git(tmp.path(), &["rev-parse", "HEAD"]), head);
 }
 
 #[test]
-fn plan_lifecycle_implemented_accept_releases_successor() {
-    // Independent-review addition (reviewer-owned; tests/cli.rs is a
-    // exclusive path). The implementation's own suite covered only the
-    // *negative* plan-lifecycle CLI paths (refused start/accept). This test
-    // exercises the post-start positive path end to end through the real CLI
-    // dispatcher: implemented -> accept, asserting that acceptance
-    // releases a BLOCKED successor to READY only once its complete
-    // hard-predecessor set is satisfied. Operates entirely on a TEMP COPY of
-    // the real graph with two synthetic nodes; the live repository graph is
-    // byte-snapshotted before and after and asserted unchanged, and the
-    // injected node ids are asserted never to leak into it.
-    let live_path = development_graph_fixture();
-    let live_before = std::fs::read_to_string(&live_path).unwrap();
-    let tmp = temp_copy_of_real_graph();
-    let toml_path = tmp.path().join("docs/plan/execution-graph.toml");
-
-    // Inject an IN_PROGRESS node whose sole hard predecessor ("02-1") is
-    // already ACCEPTED in the real graph, and a BLOCKED successor gated on it.
-    // Real-Git start/anchor capture is covered in tests/plan_prepare.rs.
-    let mut ws =
-        toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
-    use mine::domain::graph::PlanNode;
-    use mine::domain::status::PlanStatus;
-    let blank_node = |id: &str, status: PlanStatus, hard: Vec<&str>| PlanNode {
-        id: id.to_string(),
-        path: format!("docs/plan/{id}-test.md"),
-        title: format!("{id}-test"),
-        branch: String::new(),
-        branch_anchor: String::new(),
-        status,
-        hard_predecessors: hard.into_iter().map(str::to_string).collect(),
-        soft_predecessors: vec![],
-        design_references: vec!["docs/design/principles.md".to_string()],
-        exclusive_write_paths: vec![format!("tests/noop-{id}/")],
-        read_only_paths: vec![],
-        reserved_shared_paths: vec![],
-        implementation_report: String::new(),
-        review_report: String::new(),
-        implementation_commits: vec![],
-        owner: String::new(),
-        run_id: String::new(),
-        started_at: String::new(),
-        updated_at: String::new(),
-        rejection_reason: String::new(),
-        compensating_plan: String::new(),
-        withdraw_reason: String::new(),
-        withdrawn_at: String::new(),
-        planning_scope: String::new(),
-        readiness_checked_at: String::new(),
-        adr_registry_revision: 0,
-        lineage_id: String::new(),
-        worktree_path: String::new(),
-    };
-    ws.plans.push(blank_node(
-        "99-lifecycle",
-        PlanStatus::InProgress,
-        vec!["02-1"],
-    ));
-    ws.plans.push(blank_node(
-        "99-successor",
-        PlanStatus::Blocked,
-        vec!["99-lifecycle"],
-    ));
-    std::fs::write(&toml_path, toml::to_string(&ws).unwrap()).unwrap();
-    TomlStore::new(tmp.path()).render().unwrap();
-
-    // 1) implemented: IN_PROGRESS -> IMPLEMENTED.
-    let outcome = cli::dispatch(
+fn implemented_without_native_acceptance_keeps_successor_blocked() {
+    let tmp = started_fixture();
+    // mine-release-allow-plan-reference: exact registered subject checkout
+    let target = tmp.path().join(".mine/worktrees/plan99");
+    // mine-release-allow-plan-reference: actual declared fixture output
+    let product = "tests/plan99/result.txt";
+    // mine-release-allow-plan-reference: declared fixture namespace
+    std::fs::create_dir_all(target.join("tests/plan99")).unwrap();
+    std::fs::write(target.join(product), "actual private implementation\n").unwrap();
+    fixture_git(&target, &["add", "--", product]);
+    fixture_git(&target, &["commit", "-m", "private implementation"]);
+    let tip = fixture_git(&target, &["rev-parse", "HEAD"]);
+    // mine-release-allow-plan-reference: canonical implementation report
+    let report = ".mine/plan/reports/plan99-fixture-implementation.md";
+    std::fs::create_dir_all(tmp.path().join(".mine/plan/reports")).unwrap();
+    std::fs::write(
+        tmp.path().join(report),
+        "Actual private implementation commit\n",
+    )
+    .unwrap();
+    fixture_git(tmp.path(), &["add", "--", report]);
+    fixture_git(
+        tmp.path(),
+        &["commit", "-m", "explicit implementation evidence"],
+    );
+    let implemented = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &[
+                // mine-release-allow-plan-reference: actual implementation transition
                 "plan",
                 "implemented",
                 "--id",
-                "99-lifecycle",
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                "plan99",
+                "--actor",
+                "cli-executor",
+                "--expected-revision",
+                "74",
                 "--report",
-                "docs/plan/reports/99-lifecycle-implementation.md",
+                report,
                 "--commit",
-                "deadbeefcafebabe0000000000000000000000",
-                "--format",
-                "json",
+                &tip,
             ],
         ),
         "mine",
     );
-    assert_eq!(
-        outcome.exit_code, 0,
-        "implemented must succeed: {outcome:?}"
-    );
-    let after_impl =
-        toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
-    assert_eq!(
-        after_impl.get("99-lifecycle").unwrap().status,
-        PlanStatus::Implemented
-    );
-
-    // 2) accept: IMPLEMENTED -> ACCEPTED, releasing the BLOCKED successor to
-    //    READY (its sole hard predecessor is now accepted).
-    let outcome = cli::dispatch(
+    assert_eq!(implemented.exit_code, 0, "{}", envelope_json(&implemented));
+    let store = TomlStore::new(tmp.path());
+    let source = std::fs::read(store.toml_path()).unwrap();
+    let head = fixture_git(tmp.path(), &["rev-parse", "HEAD"]);
+    let operation = uuid::Uuid::new_v4().to_string();
+    let refused = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
             &[
+                // mine-release-allow-plan-reference: unbacked alias cannot authorize acceptance
                 "plan",
                 "accept",
                 "--id",
-                "99-lifecycle",
-                "--review",
-                "docs/plan/reports/99-lifecycle-review.md",
-                "--format",
-                "json",
+                // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+                "plan99",
+                "--expected-revision",
+                "75",
+                "--operation-id",
+                &operation,
+                "--input",
+                ".mine/runtime/no-closure.json",
             ],
         ),
         "mine",
     );
-    assert_eq!(outcome.exit_code, 0, "accept must succeed: {outcome:?}");
-    let env = envelope_json(&outcome);
-    assert_eq!(env["ok"], true);
-    let after_accept =
-        toml::from_str::<PlanWorkspace>(&std::fs::read_to_string(&toml_path).unwrap()).unwrap();
+    assert_ne!(refused.exit_code, 0);
+    let workspace = store.load().unwrap();
+    // mine-release-allow-plan-reference: implementation is not independent acceptance
     assert_eq!(
-        after_accept.get("99-lifecycle").unwrap().status,
-        PlanStatus::Accepted,
-        "target reaches ACCEPTED"
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        workspace.get("plan99").unwrap().status,
+        mine::domain::status::PlanStatus::Implemented
     );
+    // mine-release-allow-plan-reference: no premature successor release
     assert_eq!(
-        after_accept.get("99-successor").unwrap().status,
-        PlanStatus::Ready,
-        "successor released to READY once its full hard-predecessor set is ACCEPTED"
+        // mine-release-allow-plan-reference: isolated graph/protocol fixture, not repository Plan provenance
+        workspace.get("plan99-01").unwrap().status,
+        mine::domain::status::PlanStatus::Blocked
     );
-
-    // Live graph fully untouched (byte snapshot before/after); the injected
-    // synthetic ids never leak into it.
-    let live_after = std::fs::read_to_string(&live_path).unwrap();
-    assert_eq!(live_before, live_after, "live graph byte-unchanged");
-    assert!(!live_after.contains("99-lifecycle"));
-    assert!(!live_after.contains("99-successor"));
+    assert_eq!(std::fs::read(store.toml_path()).unwrap(), source);
+    assert_eq!(fixture_git(tmp.path(), &["rev-parse", "HEAD"]), head);
+    // The real positive acceptance/successor release is retained in the native
+    // terminal-delta/recovery case in lifecycle_operations, with actual gates.
 }
 
 #[test]
 fn workspace_status_on_development_fixture_is_idempotent() {
-    let tmp = temp_copy_of_real_graph();
+    let tmp = managed_graph_fixture();
     let repo_root = tmp.path().to_path_buf();
     let store = TomlStore::new(&repo_root);
     let before = store.load().unwrap();
@@ -623,7 +633,8 @@ fn workspace_status_on_development_fixture_is_idempotent() {
 
 #[test]
 fn repository_version_show_round_trips() {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let directory = managed_graph_fixture();
+    let repo_root = directory.path().to_path_buf();
     let cfg = mine::cli::context::load_config(&repo_root).expect("config present");
     let outcome = cli::dispatch(
         &run(
@@ -639,7 +650,8 @@ fn repository_version_show_round_trips() {
 
 #[test]
 fn cli_performs_no_git_mutation() {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let directory = managed_graph_fixture();
+    let repo_root = directory.path().to_path_buf();
     let before_clean = GitEvidence::collect(&repo_root).clean;
     for cmd in [
         ["status", "--format", "json"].as_slice(),
@@ -667,7 +679,7 @@ fn revision_conflict_surfaces_exit_5() {
         stable_branch: "master".to_string(),
         integration_branch: "dev".to_string(),
         stable_baseline_commit: "c".to_string(),
-        design_root: "docs/design/index.md".to_string(),
+        design_root: ".mine/design/index.md".to_string(),
         ephemeral_workspace: true,
         purge_before_stable_release: true,
         plans: vec![],
@@ -675,7 +687,7 @@ fn revision_conflict_surfaces_exit_5() {
     std::fs::create_dir_all(store.toml_path().parent().unwrap()).unwrap();
     std::fs::write(store.toml_path(), toml::to_string(&ws).unwrap()).unwrap();
 
-    let err = store.save_with_revision(2, Ok).unwrap_err();
+    let err = store.save_with_revision(2, "cli-fixture", Ok).unwrap_err();
     let he = mine::cli::HandlerError::from_mine(&err);
     assert_eq!(he.exit_code, mine::output::exit_code::CONFLICT);
     assert_eq!(he.code, "MINE_REVISION_CONFLICT");
@@ -687,7 +699,7 @@ fn design_backup_round_trip_and_gitignore() {
     init_git_repo(root.path());
     let repo = root.path().to_str().unwrap();
     let _ = cli::dispatch(&run(repo, &["init", "--quiet"]), "mine");
-    std::fs::write(root.path().join("docs/design/leaf.md"), "# Leaf\n").unwrap();
+    std::fs::write(root.path().join(".mine/design/leaf.md"), "# Leaf\n").unwrap();
 
     let outcome = cli::dispatch(
         &run(repo, &["design", "backup", "--format", "json"]),
@@ -696,7 +708,7 @@ fn design_backup_round_trip_and_gitignore() {
     assert_eq!(outcome.exit_code, 0);
     let env = envelope_json(&outcome);
     let backup_rel = env["data"]["backup_path"].as_str().unwrap().to_string();
-    assert!(backup_rel.starts_with("docs/design-backup-"));
+    assert!(backup_rel.starts_with(".mine/runtime/design-backups/"));
     let backup = root.path().join(&backup_rel);
     assert!(backup.join("index.md").exists());
     assert!(backup.join("leaf.md").exists());
@@ -708,7 +720,7 @@ fn design_backup_round_trip_and_gitignore() {
 
 #[test]
 fn json_envelope_has_stable_sorted_keys() {
-    let tmp = temp_copy_of_real_graph();
+    let tmp = managed_graph_fixture();
     let outcome = cli::dispatch(
         &run(
             tmp.path().to_str().unwrap(),
@@ -734,6 +746,8 @@ fn init_git_repo_with_branch(root: &std::path::Path, branch_name: &str) {
         .args(["init", "--quiet", "-b", branch_name])
         .status()
         .unwrap();
+    fixture_git(root, &["config", "commit.gpgSign", "false"]);
+    fixture_git(root, &["config", "core.autocrlf", "false"]);
     std::process::Command::new("git")
         .arg("-C")
         .arg(root)
@@ -844,75 +858,55 @@ fn init_persists_explicit_custom_stable_branch() {
 
 #[test]
 fn external_repo_without_skills_passes_distribution_gate() {
-    // A minimal non-MINE repository: git repo, no skills/, no plugins/.
-    let tmp = tempfile::tempdir().unwrap();
-    init_git_repo(tmp.path());
-    // Initialize MINE so config + design exist.
+    let (tmp, root) = common::seeded_repo(vec![]);
+    assert!(!root.join("skills").exists() && !root.join("plugins").exists());
+    // Supply genuinely valid private governance so this isolates asset parity,
+    // not the separate refusal of missing/unapproved Design decisions.
+    std::fs::create_dir_all(root.join(".mine/design/decisions")).unwrap();
+    let decision = ".mine/design/decisions/0001-generic-fixture.md";
+    std::fs::write(
+        root.join(decision),
+        "# Generic fixture decision\n\nThis private fixture has no bundled agent assets.\n",
+    )
+    .unwrap();
+    for args in [
+        vec![
+            "adr",
+            "add",
+            "--id",
+            "ADR-0001",
+            "--path",
+            decision,
+            "--title",
+            "Generic fixture",
+        ],
+        vec!["adr", "propose", "--id", "ADR-0001"],
+        vec![
+            "adr",
+            "approve",
+            "--id",
+            "ADR-0001",
+            "--by",
+            "fixture-owner",
+            "--note",
+            "explicit private fixture approval",
+        ],
+    ] {
+        let outcome = cli::dispatch(&run(root.to_str().unwrap(), &args), "mine");
+        assert_eq!(outcome.exit_code, 0, "{}", envelope_json(&outcome));
+    }
+    fixture_git(&root, &["add", "--", ".mine/design/decisions"]);
+    fixture_git(
+        &root,
+        &["commit", "-m", "explicit valid generic fixture Design"],
+    );
     let outcome = cli::dispatch(
-        &run(tmp.path().to_str().unwrap(), &["init", "--format", "json"]),
+        &run(root.to_str().unwrap(), &["release", "--format", "json"]),
         "mine",
     );
-    assert_eq!(
-        outcome.exit_code,
-        0,
-        "init must succeed: {}",
-        envelope_json(&outcome)
-    );
-    // Open the workspace on the integration branch so the stable branch stays
-    // clean (mirroring the real MINE flow) and a terminal graph exists.
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["checkout", "--quiet", "-b", "dev"])
-        .status()
-        .unwrap();
-    let outcome = cli::dispatch(
-        &run(
-            tmp.path().to_str().unwrap(),
-            &["workspace", "open", "--format", "json"],
-        ),
-        "mine",
-    );
-    assert_eq!(
-        outcome.exit_code,
-        0,
-        "workspace open must succeed: {}",
-        envelope_json(&outcome)
-    );
-    // Commit so the tree is clean, then run the full preflight.
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["commit", "--quiet", "-m", "workspace"])
-        .status()
-        .unwrap();
-    let outcome = cli::dispatch(
-        &run(
-            tmp.path().to_str().unwrap(),
-            &["release", "--format", "json"],
-        ),
-        "mine",
-    );
-    let env = envelope_json(&outcome);
-    assert_eq!(
-        outcome.exit_code, 0,
-        "release preflight must succeed: {}",
-        env
-    );
-    assert_eq!(
-        env["data"]["distribution_synced"], true,
-        "no skills/ means parity is vacuously true: {}",
-        env
-    );
-    assert_eq!(
-        env["data"]["can_release"], true,
-        "generic repo without MINE assets must be releasable: {}",
-        env
-    );
+    let envelope = envelope_json(&outcome);
+    assert_eq!(outcome.exit_code, 0, "{envelope}");
+    assert_eq!(envelope["data"]["distribution_synced"], true, "{envelope}");
+    assert_eq!(envelope["data"]["can_release"], true, "{envelope}");
+    drop(tmp);
 }

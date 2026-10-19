@@ -47,6 +47,9 @@ use crate::domain::error::MineError;
 #[must_use]
 pub fn exit_code_for(err: &MineError) -> i32 {
     match err {
+        MineError::GraphCommitted { .. } | MineError::GraphCheckpointPending { .. } => {
+            exit_code::PARTIAL
+        }
         // Repository / branch / namespace / workspace gate failures.
         MineError::RepositoryNotFound { .. }
         | MineError::DesignNamespaceConflict { .. }
@@ -92,10 +95,8 @@ pub fn exit_code_for(err: &MineError) -> i32 {
         MineError::GitEvidence { .. } => exit_code::EXTERNAL,
         // I/O and infrastructure failures are treated as external/gate
         // failures: filesystem is an external dependency. Partial-success
-        // cases (TOML written, render failed) are surfaced as GraphInvalid with
-        // a "render" hint and mapped to PARTIAL by the caller via the hint;
-        // here we map generic GraphInvalid to VALIDATION and rely on the
-        // command layer to elevate the partial-success case.
+        // cases (TOML written, render failed) have the typed GraphCommitted
+        // variant above. Text containing "render" is never proof of a commit.
         MineError::Io(_) => exit_code::EXTERNAL,
         MineError::ExternalDependency { .. } => exit_code::EXTERNAL,
     }

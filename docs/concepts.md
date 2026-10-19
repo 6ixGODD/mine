@@ -2,6 +2,25 @@
 
 MINE is a document-driven software engineering workflow for Coding Agents.
 
+In 0.2.0, governance defaults to `.mine/design/` and `.mine/plan/`, leaving user
+`docs/` alone. Actual configured roots remain authoritative for existing sources.
+Canonical Plan IDs are `planNN(?:-NN)*(?:-CNN)?`, with uppercase terminal C and
+files `<id>-<lower-kebab-slug>.md`. Responsibility, exclusions and physical mapping
+bound work; internal file autonomy does not change behavior or acceptance contracts.
+
+READY is not ownership: native start checks held IN_PROGRESS/IMPLEMENTED owners,
+the observed revision, prepared generation and actual worktree/output resources.
+Root stays integration while Plans are open. Same-operation journals/checkpoints
+recover unknown effects; they do not authorize duplicate executors or manual graph
+commits. Independent acceptance includes exact integration, current gates and safe
+worktree/local-branch cleanup. Rejection preserves its branch and passes the same
+lineage checkout to the next sibling compensation, not a new mutable-output cache.
+
+Input-bound verification can reuse applicable evidence without duplicate suites;
+independent/native and changed-input requirements still apply. A positive report,
+historical receipt or completed local release is not permission to publish or proof
+that a missing native host was tested.
+
 Its core problem is not “how to make an Agent write code,” but **how to keep a software engineering process consistent
 across multiple Agents, multiple sessions, and parallel workstreams over days, weeks, or longer**.
 
@@ -34,7 +53,7 @@ flowchart LR
 
 ## 1. Design: the currently accepted engineering model
 
-`docs/design/` contains the engineering design currently **accepted** by the repository.
+`.mine/design/` contains the engineering design currently **accepted** by the repository.
 
 It answers questions such as:
 
@@ -193,7 +212,7 @@ The storage layer uses optimistic concurrency control.
 
 Implementation still needs to know:
 
-* which files must change;
+* which responsibility/contracts change and their initial physical locations;
 * where the revision is stored;
 * how a revision conflict is reported;
 * whether retries are allowed;
@@ -232,8 +251,9 @@ then the existing Design is not sufficient for the implementation.
 
 The new architectural decision must not simply be written into the Plan.
 
-`mine-plan-create` may invoke `mine-arch` itself, analyze the impact, update the relevant Design, and then continue
-planning. The user does not need to switch Skills manually.
+The affected material decision returns to `mine-arch` and explicit owner approval
+of its exact ADR before dependent planning continues. This is not permission to
+silently approve a replacement target. Bounded internal choices remain autonomous.
 
 The important boundary is not **who invokes `mine-arch`**, but that **all durable engineering decisions enter Design
 before they enter a Plan**.
@@ -335,9 +355,9 @@ For example:
 stable
   │
   └── dev
-       ├── plan/01-api       → worktree A
-       ├── plan/02-storage   → worktree B
-       └── plan/03-ui        → worktree C
+       ├── plan/plan01-api       → worktree A
+       ├── plan/plan02-storage   → worktree B
+       └── plan/plan03-ui        → worktree C
 ```
 
 Each Plan has its own write scope.
@@ -500,7 +520,7 @@ Plan 05
     ↓ IMPLEMENTED
 mine-plan-review
     ↓ REJECTED
-Plan 05-1
+plan05-C01
 ```
 
 The compensating Plan defines a new execution contract. The original Plan 05 remains `REJECTED`.
@@ -514,14 +534,14 @@ Suppose the original graph contains:
 ```text
 Plan 06
 hard predecessors:
-    04
-    05
+    plan04
+    plan05
 ```
 
 Plan 05 is rejected and produces:
 
 ```text
-Plan 05-1
+plan05-C01
 ```
 
 If Plan 06 depended on the result Plan 05 was supposed to deliver, its dependency must become:
@@ -529,15 +549,15 @@ If Plan 06 depended on the result Plan 05 was supposed to deliver, its dependenc
 ```text
 Plan 06
 hard predecessors:
-    04
-    05-1
+    plan04
+    plan05-C01
 ```
 
 This process is called compensation rewiring.
 
 ```mermaid
 flowchart LR
-    P5[Plan 05] -->|REJECTED| C[Plan 05-1]
+    P5[Plan 05] -->|REJECTED| C[plan05-C01]
     C --> P6[Plan 06]
 ```
 
@@ -584,19 +604,19 @@ For this reason, release does not simply carry the entire `dev` development hist
 
 ---
 
-## 10. Why `docs/design/` remains while `docs/plan/` is removed
+## 10. Why `.mine/design/` remains while `.mine/plan/` is removed
 
 The two directories contain information with different lifetimes.
 
 ### Design
 
-`docs/design/` describes the currently valid system.
+`.mine/design/` describes the currently valid system.
 
 The next development cycle still needs that information, so it remains with the product in stable.
 
 ### Plan
 
-`docs/plan/` describes the current development cycle:
+`.mine/plan/` describes the current development cycle:
 
 * what needs to be done;
 * which work depends on which other work;
@@ -614,13 +634,13 @@ Therefore:
 ```text
 stable
 ├── code
-└── docs/design/
+└── .mine/design/
 ```
 
 while:
 
 ```text
-docs/plan/
+.mine/plan/
 execution graph
 reports
 plan/*
@@ -676,7 +696,7 @@ Final code should explain **why the code behaves this way**, not **which Plan on
 ## 12. Final Sync and Release Closure
 
 Having every Plan in `ACCEPTED` means only that **all planned work has been implemented and reviewed**. It does not
-automatically prove that `docs/design/` accurately describes the final codebase.
+automatically prove that `.mine/design/` accurately describes the final codebase.
 
 Implementation may have introduced:
 
@@ -695,7 +715,7 @@ First run:
 mine-sync prepare this repository for stable release
 ```
 
-This compares the final implementation with Design and writes durable engineering knowledge back into `docs/design/`.
+This compares the final implementation with Design and writes durable engineering knowledge back into `.mine/design/`.
 
 Final Sync answers:
 
@@ -713,7 +733,7 @@ Release Closure turns development state into stable product state.
 
 ```mermaid
 flowchart LR
-    DEV[dev + docs/plan + reports] --> V[Validation]
+    DEV[dev + .mine/plan + reports] --> V[Validation]
     V --> C[stable candidate]
     C --> S[stable]
 ```
@@ -730,8 +750,8 @@ Release Closure checks that:
 After successful closure:
 
 * the final product state enters stable;
-* `docs/design/` remains;
-* `docs/plan/` and execution reports are removed;
+* `.mine/design/` remains;
+* `.mine/plan/` and execution reports are removed;
 * MINE-managed temporary development branches and worktrees are cleaned up.
 
 Remote push, Git tags, GitHub Releases, and other remote publishing operations remain under user control.

@@ -44,7 +44,7 @@ use crate::application::graph_service::{
 };
 use crate::application::plan_service::PlanService;
 use crate::application::plan_service::PlanWithdrawRequest;
-use crate::cli::context::{GlobalOpts, OutputFormat, build_context, load_config};
+use crate::cli::context::{GlobalOpts, OutputFormat, build_request_context, load_config};
 use crate::domain::error::MineError;
 use crate::domain::ports::Clock;
 use crate::infrastructure::system::SystemClock;
@@ -99,7 +99,7 @@ impl MineServer {
             repo: Some(self.repo_root.clone()),
             config_root: None,
         };
-        build_context(&global)
+        build_request_context(&global)
     }
 
     /// Maps a `MineError` to a tool-level `CallToolResult` carrying the stable
@@ -109,10 +109,55 @@ impl MineServer {
     /// `structured_content` channel where present, so tooling can still read the
     /// code deterministically.
     fn tool_error(e: &MineError) -> CallToolResult {
+        if let MineError::GraphCheckpointPending {
+            operation,
+            revision_after,
+            ..
+        } = e
+        {
+            let mut result = CallToolResult::structured(
+                json!({"ok":false,"error":{"code":e.code(),"message":e.to_string()},
+                "operation_id":operation.fields().operation_id,"operation":operation,
+                "revision_before":operation.fields().observed_graph_revision,"revision_after":revision_after,"recovery_required":true}),
+            );
+            result.is_error = Some(true);
+            return result;
+        }
+        if let MineError::GraphCommitted {
+            revision_before,
+            revision_after,
+            ..
+        } = e
+        {
+            let mut result = CallToolResult::structured(
+                json!({"ok": false, "error": {"code": e.code(), "message": e.to_string()}, "committed": true, "repair_needed": true, "revision_before": revision_before, "revision_after": revision_after}),
+            );
+            result.is_error = Some(true);
+            return result;
+        }
         let mut result =
             CallToolResult::error(vec![ContentBlock::text(format!("{}: {}", e.code(), e))]);
         let _ = &mut result; // keep structured_content optional and stable
         result
+    }
+}
+
+#[cfg(test)]
+mod partial_outcome_tests {
+    use super::*;
+    #[test]
+    fn mcp_committed_render_error_retains_actual_revisions() {
+        let result = MineServer::tool_error(&MineError::GraphCommitted {
+            revision_before: 10,
+            revision_after: 11,
+            detail: "render repair needed".into(),
+        });
+        assert_eq!(result.is_error, Some(true));
+        let value = result.structured_content.unwrap();
+        assert_eq!(value["committed"], true);
+        assert_eq!(value["repair_needed"], true);
+        assert_eq!(value["revision_before"], 10);
+        assert_eq!(value["revision_after"], 11);
     }
 }
 
@@ -122,7 +167,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_workspace_status",
-        description = "Read-only execution-graph workspace status (revision, branches, plan count, ready frontier).",
+        description = "Read-only workspace status, ready frontier and pending operation identities for recovery.",
         annotations(read_only_hint = true)
     )]
     fn mine_workspace_status(&self) -> CallToolResult {
@@ -142,6 +187,7 @@ impl MineServer {
                 "integration_branch": st.integration_branch,
                 "plan_count": st.plan_count,
                 "ready": st.ready,
+                "pending_operations": st.pending_operations,
             })),
             Err(e) => MineServer::tool_error(&e),
         }
@@ -172,7 +218,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_graph_status",
-        description = "Read-only graph status summary (revision, branches, plan count, ready frontier).",
+        description = "Read-only graph status, ready frontier and pending operation identities for recovery.",
         annotations(read_only_hint = true)
     )]
     fn mine_graph_status(&self) -> CallToolResult {
@@ -203,7 +249,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_graph_wave",
-        description = "Read-only stable parallel wave (write-scope-disjoint ready plans).",
+        description = "Read-only common scheduling snapshot with held ownership, policy, pending publication, eligible/selected Plans and blockers.",
         annotations(read_only_hint = true)
     )]
     fn mine_graph_wave(&self) -> CallToolResult {
@@ -213,11 +259,12 @@ impl MineServer {
             )]);
         };
         let graph = GraphService::new(&ctx.store);
-        match graph.wave() {
+        match graph.scheduling_snapshot() {
             Ok(wave) => CallToolResult::structured(json!({
                 "command": "graph.wave",
                 "ok": true,
-                "wave": wave,
+                "wave": wave.selected,
+                "scheduling": wave,
             })),
             Err(e) => MineServer::tool_error(&e),
         }
@@ -375,7 +422,7 @@ impl MineServer {
         }
     }
 
-    // ------------------- mutating tools (7) -------------------
+    // ------------------- mutating tools (8) -------------------
 
     #[tool(
         name = "mine_graph_repair_provenance",
@@ -392,7 +439,7 @@ impl MineServer {
             });
         };
         let graph = GraphService::new(&ctx.store);
-        match graph.repair_provenance(args.expected_revision) {
+        match graph.repair_provenance(args.expected_revision, &args.actor) {
             Ok(outcome) => CallToolResult::structured(json!({
                 "command": "graph.repair-provenance",
                 "ok": true,
@@ -400,8 +447,52 @@ impl MineServer {
                 "revision_after": outcome.revision_after,
                 "data": {
                     "changed": outcome.changed,
+                    "operation": graph.completed_checkpoint(),
                     "repaired_plans": outcome.repaired_plans,
                     "schema_version": outcome.workspace.schema_version,
+                },
+            })),
+            Err(error) => MineServer::tool_error(&error),
+        }
+    }
+
+    #[tool(
+        name = "mine_graph_repair_compensation_predecessors",
+        description = "Revision-checked bounded repair of one invalid, unstarted compensation predecessor list derived from its rejected predecessor.",
+        annotations(read_only_hint = false)
+    )]
+    fn mine_graph_repair_compensation_predecessors(
+        &self,
+        Parameters(args): Parameters<MineGraphRepairCompensationPredecessorsArgs>,
+    ) -> CallToolResult {
+        let Ok(ctx) = self.ctx() else {
+            return MineServer::tool_error(&MineError::RepositoryNotFound {
+                detail: "repository unavailable".to_string(),
+            });
+        };
+        let graph = GraphService::new(&ctx.store);
+        match graph.repair_compensation_predecessors(
+            &args.actor,
+            &args.id,
+            args.expected_revision,
+            &args.reason,
+            &SystemClock.now_utc_rfc3339(),
+        ) {
+            Ok(outcome) => CallToolResult::structured(json!({
+                "command": "graph.repair-compensation-predecessors",
+                "ok": true,
+                "revision_before": outcome.revision_before,
+                "revision_after": outcome.revision_after,
+                "data": {
+                    "changed": outcome.changed,
+                    "operation": graph.completed_checkpoint(),
+                    "plan": outcome.plan_id,
+                    "rejected_predecessor": outcome.rejected_predecessor,
+                    "predecessors_before": outcome.predecessors_before,
+                    "predecessors_after": outcome.predecessors_after,
+                    "status_before": outcome.status_before,
+                    "status_after": outcome.status_after,
+                    "reason": outcome.reason,
                 },
             })),
             Err(error) => MineServer::tool_error(&error),
@@ -432,25 +523,19 @@ impl MineServer {
             ctx.config
                 .as_ref()
                 .map(DesignService::default_planning_scope)
-                .unwrap_or_else(|| "docs/design".to_string())
+                .unwrap_or_else(|| crate::domain::config::GovernanceLayout::DESIGN_DIR.to_string())
         } else {
             if let Err(error) = crate::domain::path::normalize_repo_relative(&planning_scope) {
                 return Ok(MineServer::tool_error(&error));
             }
             planning_scope
         };
-        if let Some(config) = ctx.config.as_ref() {
-            if ctx.repo_root.join(&config.adr.registry).exists() {
-                let readiness =
-                    AdrService::new(&ctx.repo_root, config).require_planning_ready(&planning_scope);
-                if let Err(error) = readiness {
-                    return Ok(MineServer::tool_error(&error));
-                }
-            }
-        }
         let graph = GraphService::new(&ctx.store);
         let svc = PlanService::new(&graph);
         let req = PlanAddRequest {
+            actor: args.actor,
+            ownership_input: args.ownership_input,
+            expected_revision: args.expected_revision,
             id: args.id,
             path: args.path,
             title: args.title,
@@ -468,7 +553,7 @@ impl MineServer {
                     "ok": true,
                     "revision_before": after - 1,
                     "revision_after": after,
-                    "data": { "plan": "added" },
+                    "data": { "plan": "added", "operation":graph.completed_checkpoint() },
                 }))
             }
         })
@@ -476,7 +561,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_plan_start",
-        description = "Start a READY plan (assigns owner/run id; reads current revision, writes under the lock, revision +1). Mutates the graph.",
+        description = "Start a READY plan at the caller's expected graph revision; assigns owner/run under the Root lock. Mutates the graph.",
         annotations(read_only_hint = false)
     )]
     fn mine_plan_start(
@@ -491,16 +576,14 @@ impl MineServer {
             ]));
         };
         let graph = GraphService::new(&ctx.store);
-        let expected = match graph.validate() {
-            Ok(ws) => ws.revision,
-            Err(e) => return Ok(MineServer::tool_error(&e)),
-        };
+        let expected = args.expected_revision;
         let now = SystemClock.now_utc_rfc3339();
         let svc = PlanService::new(&graph);
         Ok(
             match svc.start(PlanStartRequest {
+                expected_revision: expected,
                 id: args.id.clone(),
-                owner: args.owner.unwrap_or_else(|| "mcp".to_string()),
+                owner: args.owner,
                 run_id: args.run_id.unwrap_or_else(|| "mcp-run".to_string()),
                 started_at: now,
             }) {
@@ -516,7 +599,9 @@ impl MineServer {
                         "ok": true,
                         "revision_before": expected,
                         "revision_after": saved.revision,
-                        "data": { "plan": args.id, "branch_anchor": branch_anchor },
+                        "data": { "plan": args.id, "branch_anchor": branch_anchor,"operation":graph.completed_checkpoint(),
+                            "started_preparation_generation":saved.get(&args.id).and_then(|n|n.started_preparation_generation),
+                            "preparation":saved.get(&args.id).and_then(|n|n.preparations.last()) },
                     }))
                 }
             },
@@ -540,14 +625,13 @@ impl MineServer {
             ]));
         };
         let graph = GraphService::new(&ctx.store);
-        let expected = match graph.validate() {
-            Ok(ws) => ws.revision,
-            Err(e) => return Ok(MineServer::tool_error(&e)),
-        };
+        let expected = args.expected_revision;
         let now = SystemClock.now_utc_rfc3339();
         let svc = PlanService::new(&graph);
         Ok(
             match svc.mark_implemented(PlanImplementedRequest {
+                actor: args.actor,
+                expected_revision: expected,
                 id: args.id.clone(),
                 report: args.report,
                 commits: args.commits,
@@ -559,7 +643,7 @@ impl MineServer {
                     "ok": true,
                     "revision_before": expected,
                     "revision_after": saved.revision,
-                    "data": { "plan": args.id },
+                    "data": { "plan": args.id,"operation":graph.completed_checkpoint() },
                 })),
             },
         )
@@ -567,7 +651,7 @@ impl MineServer {
 
     #[tool(
         name = "mine_plan_accept",
-        description = "Accept an IMPLEMENTED plan (records review report; releases eligible BLOCKED successors). Mutates the graph under the lock, revision +1.",
+        description = "Finalize one existing independent acceptance operation after integration, current verification and exact cleanup. Requires caller graph revision, operation id and contained typed input. Uses the same native checkpoint/recovery as CLI.",
         annotations(read_only_hint = false)
     )]
     fn mine_plan_accept(
@@ -582,25 +666,45 @@ impl MineServer {
             ]));
         };
         let graph = GraphService::new(&ctx.store);
-        let expected = match graph.validate() {
-            Ok(ws) => ws.revision,
-            Err(e) => return Ok(MineServer::tool_error(&e)),
-        };
-        let now = SystemClock.now_utc_rfc3339();
+        let expected = args.expected_revision;
         let svc = PlanService::new(&graph);
+        let operation_id =
+            match crate::domain::lifecycle_operation::OperationId::parse(args.operation_id.clone())
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    return Ok(MineServer::tool_error(
+                        &crate::domain::error::MineError::GraphInvalid {
+                            detail: error.to_string(),
+                        },
+                    ));
+                }
+            };
+        let input = match crate::domain::graph::RepoPath::new(args.input.clone()) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(MineServer::tool_error(
+                    &crate::domain::error::MineError::GraphInvalid {
+                        detail: error.to_string(),
+                    },
+                ));
+            }
+        };
         Ok(
             match svc.accept(PlanAcceptRequest {
+                expected_revision: expected,
                 id: args.id.clone(),
-                review_report: args.review,
-                updated_at: now,
+                operation_id,
+                input,
             }) {
                 Err(e) => MineServer::tool_error(&e),
                 Ok(saved) => CallToolResult::structured(json!({
                     "command": "plan.accept",
                     "ok": true,
+                    "workspace_id":saved.workspace_id,
                     "revision_before": expected,
                     "revision_after": saved.revision,
-                    "data": { "plan": args.id },
+                    "data": { "plan": args.id, "operation":saved.get(&args.id).and_then(|node|node.acceptance.as_ref()) },
                 })),
             },
         )
@@ -623,14 +727,13 @@ impl MineServer {
             ]));
         };
         let graph = GraphService::new(&ctx.store);
-        let expected = match graph.validate() {
-            Ok(ws) => ws.revision,
-            Err(e) => return Ok(MineServer::tool_error(&e)),
-        };
+        let expected = args.expected_revision;
         let now = SystemClock.now_utc_rfc3339();
         let svc = PlanService::new(&graph);
         Ok(
             match svc.reject(PlanRejectRequest {
+                actor: args.actor,
+                expected_revision: expected,
                 id: args.id.clone(),
                 reason: args.reason,
                 review_report: args.review_report.clone().unwrap_or_default(),
@@ -645,6 +748,7 @@ impl MineServer {
                     "revision_after": saved.revision,
                     "data": {
                         "plan": args.id,
+                        "operation":graph.completed_checkpoint(),
                         "review_report": args.review_report
                     },
                 })),
@@ -653,7 +757,7 @@ impl MineServer {
     }
     #[tool(
         name = "mine_plan_withdraw",
-        description = "Withdraw an unstarted plan (DRAFT/BLOCKED/READY) into terminal WITHDRAWN with a recorded reason (ADR-0012). Performs the same provably-lossless Git cleanup checks; mutates the graph under the lock, revision +1.",
+        description = "Withdraw an unstarted Plan through a same-ID journaled lossless Git effect and native Root checkpoint; actor and original request bind recovery.",
         annotations(read_only_hint = false)
     )]
     fn mine_plan_withdraw(
@@ -668,30 +772,40 @@ impl MineServer {
             ]));
         };
         let graph = GraphService::new(&ctx.store);
-        let expected = match graph.validate() {
-            Ok(ws) => ws.revision,
-            Err(e) => return Ok(MineServer::tool_error(&e)),
-        };
-        let now = SystemClock.now_utc_rfc3339();
+        let expected = args.expected_revision;
         let svc = PlanService::new(&graph);
+        let operation_id =
+            match crate::domain::lifecycle_operation::OperationId::parse(args.operation_id) {
+                Ok(id) => id,
+                Err(e) => {
+                    return Ok(MineServer::tool_error(&MineError::GraphInvalid {
+                        detail: e.to_string(),
+                    }));
+                }
+            };
         Ok(
             match svc.withdraw(PlanWithdrawRequest {
+                expected_revision: expected,
                 id: args.id.clone(),
                 reason: args.reason,
-                withdrawn_at: now,
+                operation_id,
+                actor: args.actor,
             }) {
                 Err(e) => MineServer::tool_error(&e),
                 Ok((saved, withdrawal)) => CallToolResult::structured(json!({
                     "command": "plan.withdraw",
                     "ok": true,
-                    "revision_before": expected,
-                    "revision_after": saved.revision,
+                    "workspace_id":saved.workspace_id,
+                    "revision_before": withdrawal.revision_before,
+                    "revision_after": withdrawal.revision_after,
                     "data": {
                         "plan": withdrawal.id,
                         "status_before": withdrawal.status_before,
                         "status_after": withdrawal.status_after,
                         "withdrawn_at": withdrawal.withdrawn_at,
                         "cleaned_git_artifacts": withdrawal.cleaned_git_artifacts,
+                        "operation":withdrawal.operation,
+                        "replay":withdrawal.replay,
                     },
                 })),
             },
@@ -717,8 +831,23 @@ struct MinePlanShowArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MineGraphRepairProvenanceArgs {
+    /// Explicit initiating actor; never inferred from stored owner/Git.
+    actor: String,
     /// Authoritative graph revision expected by the caller.
     expected_revision: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct MineGraphRepairCompensationPredecessorsArgs {
+    /// Explicit initiating actor; never inferred from stored owner/Git.
+    actor: String,
+    /// Canonical compensation Plan ID.
+    id: String,
+    /// Authoritative graph revision expected by the caller.
+    expected_revision: u64,
+    /// Non-empty operator reason returned as repair evidence.
+    reason: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -739,12 +868,20 @@ struct MineDesignReadinessArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanAddArgs {
+    /// Explicit initiating actor; never inferred from stored owner/Git.
+    actor: String,
+    /// Contained JSON semantic declarations and policy/ADR selectors.
+    #[serde(default)]
+    ownership_input: Option<String>,
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
     path: String,
     title: String,
     /// At least one design reference path (relative to the repository root).
     design_references: Vec<String>,
-    /// Exclusive write paths owned by this plan. Optional (defaults to none).
+    /// Exclusive write paths. Required for conservative registration; omission
+    /// is valid only when verified semantic input supplies the authority mapping.
     #[serde(default)]
     exclusive_write_paths: Option<Vec<String>>,
     /// Hard predecessor plan ids. Optional (defaults to none — a no-predecessor
@@ -760,10 +897,11 @@ struct MinePlanAddArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanStartArgs {
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
-    /// Owner name assigned on start. Optional (defaults to `mcp`).
-    #[serde(default)]
-    owner: Option<String>,
+    /// Explicit initiating owner; no default or Git identity inference.
+    owner: String,
     /// Run identifier assigned on start. Optional (defaults to `mcp-run`).
     #[serde(default)]
     run_id: Option<String>,
@@ -772,6 +910,10 @@ struct MinePlanStartArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanImplementedArgs {
+    /// Explicit initiating actor; never inferred from stored owner/Git.
+    actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
     /// Repository-relative path of the implementation report.
     report: String,
@@ -782,14 +924,22 @@ struct MinePlanImplementedArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanAcceptArgs {
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
-    /// Repository-relative path of the independent review report.
-    review: String,
+    /// Existing independent acceptance closure operation UUID.
+    operation_id: String,
+    /// Root-contained typed finalize request with current check selections.
+    input: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanRejectArgs {
+    /// Explicit initiating actor; never inferred from stored owner/Git.
+    actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
     /// The rejection reason.
     reason: String,
@@ -802,6 +952,10 @@ struct MinePlanRejectArgs {
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct MinePlanWithdrawArgs {
+    operation_id: String,
+    actor: String,
+    /// Graph revision observed by the caller, never refreshed internally.
+    expected_revision: u64,
     id: String,
     /// The non-empty withdrawal reason.
     reason: String,

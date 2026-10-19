@@ -1,423 +1,200 @@
-# Release, checksum, bootstrap, and isolated-installation smoke tests.
-#
-# No gate masks failure. Checksums prove artifact integrity only; binary
-# reproducibility is not claimed.
-#
-# Platform policy: only `quality` and `agent-install` need all three platforms
-# (they compile/test platform-conditional code and exercise real
-# junction/symlink/canonical-path filesystem APIs). `preflight`, `artifact`,
-# `bootstrap`, and `mcp-discovery` are pure logic or redundant with `quality`,
-# so they run on a single Ubuntu runner. Tag-triggered `release-artifacts`
-# builds the real per-platform binaries via its own matrix.
-#
-# This workflow does NOT publish, push, create tags, mutate master, or perform
-# stable release closure -- those steps are reserved for the independent
-# final reviewer.
+# Archive integrity is not build reproducibility. Native delivery runs on PRs
+# and branches as well as tags; only the final publication job is tag-gated.
+# Phase probes use only isolated, typed fixtures and the exact built candidate.
 name: release-smoke
 
 on:
   push:
-    branches:
-      - master
-      - dev
-      - "plan/**"
-    tags:
-      - "v*"
+    branches: [master, dev, "plan/**"]
+    # ADR-0035: this one release uses the complete independently reviewed local join.
+    tags: ["v*", "!v0.2.0"]
   pull_request:
 
+permissions:
+  contents: read
+
+env:
+  CARGO_TARGET_DIR: ${{ github.workspace }}/.mine/build/ci/${{ github.job }}/cargo-target
+  CARGO_BUILD_JOBS: "2"
+  RUST_TEST_THREADS: "1"
+
 jobs:
-  # --- Multi-platform quality + distribution gates ---
+  platforms:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - id: matrix
+        run: echo "matrix=$(python scripts/test-install-delivery.py --matrix)" >> "$GITHUB_OUTPUT"
+
   quality:
-    name: Quality + distribution (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-          - macos-latest
-    permissions:
-      contents: read
+    needs: platforms
+    uses: ./.github/workflows/ci.yml
+    with:
+      matrix: ${{ needs.platforms.outputs.matrix }}
+
+  payload:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
-          components: rustfmt, clippy
+          python-version: "3.11"
+      - run: python scripts/sync-release-platforms.py --check
+      - run: python scripts/sync-plugin-assets.py --check
+      - run: python scripts/verify.py
+      - name: Publication refusal counterexamples
+        run: python scripts/test-install-delivery.py --contracts-only
 
-      - name: Print toolchain
-        run: |
-          rustc --version
-          cargo --version
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings -W unsafe-code
-
-      - name: cargo build
-        run: cargo build --all-targets --all-features
-
-      - name: cargo test
-        run: cargo test --all-targets --all-features
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.x"
-
-      - name: Distribution sync check
-        run: python scripts/sync-plugin-assets.py --check
-
-      - name: Skill frontmatter verify
-        run: python scripts/verify.py
-
-      - name: mine design validate
-        run: ./target/debug/mine design validate --format json
-
-      - name: mine graph validate (development workspace only)
-        shell: bash
-        run: |
-          if [ -f docs/plan/execution-graph.toml ]; then
-            ./target/debug/mine graph validate --format json
-          else
-            echo "No development graph: valid stable tree; graph validation is not applicable."
-          fi
-
-  # --- Release preflight (validation only; can genuinely fail) ---
   preflight:
-    name: Release preflight
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build mine
-        run: cargo build --quiet
-
-      - name: Release preflight (development workspace only)
-        shell: bash
-        run: |
-          # Release preflight consumes the temporary execution graph. A stable
-          # release tree intentionally omits docs/plan/, so it is not a valid
-          # preflight input. Its stable-tree safety is instead covered by the
-          # attached-branch doctor and release-candidate checks.
-          if [ -f docs/plan/execution-graph.toml ]; then
-            ./target/debug/mine release --format json
-          else
-            echo "No development graph: release preflight is not applicable on the stable tree."
-          fi
-
-  # --- Deterministic release artifact + SHA-256 integrity checksum (smoke) ---
-  artifact:
-    name: Artifact + SHA-256
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binary
-        run: cargo build --release --quiet
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-
-      - name: Generate SHA-256 checksum (artifact integrity)
-        shell: bash
-        run: |
-          # Build once, hash once. This is an INTEGRITY check (the checksum
-          # verifies the artifact was not corrupted during upload/download),
-          # NOT a reproducibility check. We do not claim the build is
-          # byte-reproducible across independent builds. Python's hashlib is
-          # used for cross-platform consistency (no reliance on certutil's
-          # space-separated output format or platform-specific coreutils).
-          BIN=target/release/mine
-          [ "$RUNNER_OS" = "Windows" ] && BIN=target/release/mine.exe
-          python -c "
-          import hashlib, sys
-          with open('$BIN','rb') as f:
-              h = hashlib.sha256(f.read()).hexdigest()
-          with open('mine-sha256.txt','w') as f:
-              f.write(h + '  ' + '$BIN' + chr(10))
-          print(h + '  ' + '$BIN')
-          "
-
-      - name: Verify the checksum matches the actual artifact
-        shell: bash
-        run: |
-          # Re-hash the same artifact and compare: this verifies the checksum
-          # file was written correctly and the artifact has not changed since
-          # hashing (e.g., a concurrent modification). It is NOT a claim of
-          # build reproducibility.
-          BIN=target/release/mine
-          [ "$RUNNER_OS" = "Windows" ] && BIN=target/release/mine.exe
-          python -c "
-          import hashlib
-          with open('$BIN','rb') as f:
-              actual = hashlib.sha256(f.read()).hexdigest()
-          with open('mine-sha256.txt') as f:
-              recorded = f.read().split()[0]
-          assert actual == recorded, f'checksum mismatch: {actual} != {recorded}'
-          print('checksum verified: ' + actual)
-          "
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
+          python-version: "3.11"
+      - name: Compile actual candidate and typed private fixture producer
+        run: cargo test --locked --test release_delivery_contract --no-run --message-format=json > "$RUNNER_TEMP/phase-build.jsonl"
+      - name: Isolated phase behavior probes (not this project's release permission)
+        run: python scripts/test-install-delivery.py --preflight "$CARGO_TARGET_DIR/debug/mine" --fixture-build "$RUNNER_TEMP/phase-build.jsonl" --output "$RUNNER_TEMP/mine-phase-evidence"
+      - name: Actual event candidate identity Design ADR and tag-only stable hygiene
+        run: python scripts/test-install-delivery.py --candidate-check "$CARGO_TARGET_DIR/debug/mine" --ref "$GITHUB_REF" --output "$RUNNER_TEMP/mine-candidate-evidence"
+      - uses: actions/upload-artifact@v4
         with:
-          name: mine-checksums
-          path: mine-sha256.txt
-          retention-days: 7
+          name: phase-preflight-evidence
+          path: |
+            ${{ runner.temp }}/mine-phase-evidence/phase-evidence.json
+            ${{ runner.temp }}/mine-phase-evidence/phase-commands.json
+            ${{ runner.temp }}/mine-candidate-evidence/candidate-evidence.json
+          if-no-files-found: error
 
-  # --- Bootstrap smoke test (isolated temp repo) ---
-  bootstrap:
-    name: Bootstrap smoke
+  mcp-discovery:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build mine
-        run: cargo build --quiet
-
-      - name: "Bootstrap: mine init on isolated empty repo"
-        shell: bash
-        run: |
-          set -e
-          TMP=$(mktemp -d)
-          git init --quiet "$TMP"
-          git -C "$TMP" config user.email "ci@test.com"
-          git -C "$TMP" config user.name "ci"
-          echo "# Test" > "$TMP/README.md"
-          git -C "$TMP" add .
-          git -C "$TMP" commit --quiet -m "init"
-          ./target/debug/mine --repo "$TMP" init --format json
-          # Verify skeleton created.
-          test -f "$TMP/.mine/config.toml"
-          test -f "$TMP/docs/design/.mine-design.toml"
-          test -f "$TMP/docs/design/index.md"
-          # Verify no plan workspace.
-          ! test -d "$TMP/docs/plan"
-          echo "Bootstrap smoke test passed"
-          rm -rf "$TMP"
-
-  # --- Isolated mine setup + agent status smoke (single platform) ---
-  # End-to-end check of the bootstrap->setup->install path with an isolated
-  # config root. Platform-specific junction/symlink/MCP behavior is already
-  # covered by the quality job's agent_setup tests on all three platforms;
-  # this job only verifies the setup command's integration layer, so a single
-  # Ubuntu runner suffices.
-  agent-install:
-    name: mine setup + agent status
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build mine
-        run: cargo build --quiet
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.11"
+      - run: cargo build --locked
+      - name: Actual initialization and schema discovery
+        run: python scripts/test-install-delivery.py --mcp "$CARGO_TARGET_DIR/debug/mine" --output "$RUNNER_TEMP/mine-mcp-evidence"
+      - name: CLI/MCP contract parity
+        run: cargo test --test cli --test mcp
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mcp-discovery-evidence
+          path: |
+            ${{ runner.temp }}/mine-mcp-evidence/stdout.jsonl
+            ${{ runner.temp }}/mine-mcp-evidence/stderr.log
+            ${{ runner.temp }}/mine-mcp-evidence/tools.json
+            ${{ runner.temp }}/mine-mcp-evidence/discovery-evidence.json
+          if-no-files-found: error
 
-      - name: mine setup + agent status (isolated config root, non-interactive)
-        shell: bash
-        run: |
-          set -e
-          TMP=$(mktemp -d)
-          # Non-TTY CI: exercise the mine setup non-interactive path with an
-          # explicit agent list and isolated config root. This installs all
-          # four agents (MCP + Skills) exactly as bootstrap would on a user
-          # machine with --agents.
-          ./target/debug/mine setup --agents claude-code,codex,pi,opencode --yes --config-root "$TMP" --format json
-          echo "=== agent status ==="
-          # Verify all four agents are installed with MCP registered. Use agent
-          # status (not full doctor) because doctor also checks graph/git which
-          # are not meaningful on a detached tag checkout.
-          ./target/debug/mine agent status --config-root "$TMP" --format json > status.json
-          python -c "
-          import json
-          d=json.load(open('status.json'))
-          installs={i['agent']: i for i in d['data']['installs']}
-          expected={'claude-code','codex','pi','opencode'}
-          assert set(installs)==expected, f'expected {expected}, got {set(installs)}'
-          for a,i in installs.items():
-              assert i['files']>0, f'{a}: no files'
-              if a!='pi':
-                  assert i['mcp_registered'], f'{a}: MCP not registered'
-          print('mine setup smoke test passed: 4 agents installed, MCP registered for claude-code/codex/opencode')
-          "
-          rm -f status.json
-          rm -rf "$TMP"
-
-  # --- Real downloadable release assets (tag pushes only) ---
-  # Triggered by pushing a `v*` tag. Produces prebuilt, downloadable binaries
-  # for Linux (x86_64), macOS (Apple Silicon), and Windows (x86_64),
-  # packages each as an archive with a SHA-256 sidecar, and publishes a real
-  # GitHub Release with those assets. End users install `mine` by downloading
-  # the archive for their platform -- no Rust toolchain required. Branch/PR
-  # pushes never reach this job (`if` gate), so they cannot accidentally
-  # publish a release.
-  release-artifacts:
-    name: Release artifact (${{ matrix.display }})
-    if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ${{ matrix.os }}
+  native-delivery:
+    needs: platforms
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, display: linux-x86_64, archive: tar.gz }
-          - { os: macos-latest, target: aarch64-apple-darwin, display: macos-arm64, archive: tar.gz }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc, display: windows-x86_64, archive: zip }
-    permissions:
-      contents: read
+      matrix: ${{ fromJSON(needs.platforms.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
-
-      - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
-
-      - name: Package archive + SHA-256
-        shell: bash
-        run: |
-          set -eu
-          TARGET='${{ matrix.target }}'
-          DISPLAY='${{ matrix.display }}'
-          ARCHIVE='${{ matrix.archive }}'
-          if [ "$ARCHIVE" = "zip" ]; then
-            EXT=zip
-            BIN=target/"$TARGET"/release/mine.exe
-            BIN_NAME=mine.exe
-          else
-            EXT=tar.gz
-            BIN=target/"$TARGET"/release/mine
-            BIN_NAME=mine
-          fi
-          test -f "$BIN"
-          STAGE="mine-$DISPLAY-stage"
-          rm -rf "$STAGE"; mkdir -p "$STAGE"
-          # Keep the platform-native binary name (mine.exe on Windows, mine on
-          # Unix). Renaming mine.exe -> mine breaks Windows users and
-          # bootstrap's archive lookup.
-          cp "$BIN" "$STAGE"/"$BIN_NAME"
-          cp README.md LICENSE "$STAGE"/ 2>/dev/null || true
-          if [ "$ARCHIVE" = "zip" ]; then
-            7z a "mine-$DISPLAY.$EXT" "$STAGE"
-          else
-            tar czf "mine-$DISPLAY.$EXT" -C "$STAGE" .
-          fi
-          FILE="mine-$DISPLAY.$EXT"
-          python -c "import hashlib; h=hashlib.sha256(open('$FILE','rb').read()).hexdigest(); open('$FILE'+'.sha256','w').write(h+'  '+'$FILE'+chr(10)); print(h, '$FILE')"
-
-      - name: Upload release artifact
-        uses: actions/upload-artifact@v4
+          python-version: "3.11"
+      - name: Build exact native release candidate
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$NATIVE_TARGET"
+      - name: Package actual native executable and adjacent checksum
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_BINARY: ${{ matrix.binary }}
+        run: python scripts/test-install-delivery.py --package "$CARGO_TARGET_DIR/$NATIVE_TARGET/release/$NATIVE_BINARY" --output "$RUNNER_TEMP/mine-delivery/assets"
+      - name: Actual bootstrap checksum extraction version and refusals
+        env:
+          NATIVE_TARGET: ${{ matrix.target }}
+          NATIVE_BINARY: ${{ matrix.binary }}
+          NATIVE_ARCHIVE: ${{ matrix.archive }}
+        run: python scripts/test-install-delivery.py --binary "$CARGO_TARGET_DIR/$NATIVE_TARGET/release/$NATIVE_BINARY" --archive "$RUNNER_TEMP/mine-delivery/assets/$NATIVE_ARCHIVE" --output "$RUNNER_TEMP/mine-delivery/native"
+      - name: Accepted native installer regressions
+        run: cargo test --test install_delivery actual_native
+      - name: Accepted update swap and refresh outcomes
+        run: "cargo test --lib setup::"
+      - uses: actions/upload-artifact@v4
         with:
-          name: release-artifact-${{ matrix.display }}
+          name: release-artifact-${{ matrix.os }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/mine-delivery/assets
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-evidence-${{ matrix.os }}-${{ matrix.arch }}
+          # Retain bounded decisive logs/identities, not every disposable
+          # fixture binary, installation tree and archive copy.
           path: |
-            mine-${{ matrix.display }}.tar.gz
-            mine-${{ matrix.display }}.tar.gz.sha256
-            mine-${{ matrix.display }}.zip
-            mine-${{ matrix.display }}.zip.sha256
+            ${{ runner.temp }}/mine-delivery/package-evidence.json
+            ${{ runner.temp }}/mine-delivery/native/native-evidence.json
+            ${{ runner.temp }}/mine-delivery/native/*/stdout.log
+            ${{ runner.temp }}/mine-delivery/native/*/stderr.log
+            ${{ runner.temp }}/mine-delivery/native/*/requests.jsonl
+            ${{ runner.temp }}/mine-delivery/native/*/refresh.stdout.json
+            ${{ runner.temp }}/mine-delivery/native/*/refresh.stderr.log
           if-no-files-found: error
 
   release:
-    name: Publish GitHub Release
+    needs: [quality, preflight, mcp-discovery, payload, native-delivery]
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: release-artifacts
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
         with:
-          # Full history so git-cliff can walk commits since the last tag.
           fetch-depth: 0
-
-      - name: Generate changelog with git-cliff
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Refuse failed skipped cancelled or missing mandatory jobs
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: python scripts/test-install-delivery.py --gate-needs "$NEEDS_JSON" --ref "$GITHUB_REF"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-artifact-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/mine-publication
+      - name: Verify complete canonical archive and checksum matrix
+        run: python scripts/test-install-delivery.py --verify-assets "$RUNNER_TEMP/mine-publication"
+      - name: Generate changelog
         uses: orhun/git-cliff-action@v4
         id: cliff
         with:
           config: cliff.toml
           args: --latest --strip header
+      - name: Compose release body
         env:
-          OUTPUT: CHANGES.md
-
-      - name: Build release body (changelog + template)
-        shell: bash
-        env:
-          CLIFF_CONTENT: ${{ steps.cliff.outputs.content }}
+          CHANGELOG: ${{ steps.cliff.outputs.content }}
         run: |
-          set -eu
-          # CLIFF_CONTENT is the changelog text (not a file path); write it
-          # then append the hand-written install/usage template.
-          {
-            printf '%s\n' "$CLIFF_CONTENT"
-            echo
-            cat .github/RELEASE_NOTES_TEMPLATE.md
-          } > RELEASE_BODY.md
-          echo "--- release body ---"
-          cat RELEASE_BODY.md
-
-      - name: Download all release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: release-artifact-*
-          merge-multiple: true
-          path: release
-
-      - name: Build combined SHA256 manifest
-        shell: bash
-        run: |
-          set -eu
-          cd release
-          rm -f SHA256SUMS.txt
-          cat *.sha256 > SHA256SUMS.txt
-          echo "Combined manifest:"
-          cat SHA256SUMS.txt
-          echo
-          echo "Assets present:"
-          ls -l
-
-      - name: Create GitHub Release and upload assets
+          printf '%s\n\n' "$CHANGELOG" > "$RUNNER_TEMP/RELEASE_BODY.md"
+          cat .github/RELEASE_NOTES_TEMPLATE.md >> "$RUNNER_TEMP/RELEASE_BODY.md"
+      - name: Publish only after all mandatory results and checksums
         uses: softprops/action-gh-release@v3
         with:
-          body_path: RELEASE_BODY.md
+          body_path: ${{ runner.temp }}/RELEASE_BODY.md
           fail_on_unmatched_files: true
           files: |
-            release/mine-*.tar.gz
-            release/mine-*.zip
-            release/mine-*.tar.gz.sha256
-            release/mine-*.zip.sha256
-            release/SHA256SUMS.txt
+            ${{ runner.temp }}/mine-publication/mine-*.tar.gz
+            ${{ runner.temp }}/mine-publication/mine-*.zip
+            ${{ runner.temp }}/mine-publication/mine-*.sha256
+            ${{ runner.temp }}/mine-publication/SHA256SUMS.txt

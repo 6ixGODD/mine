@@ -127,8 +127,10 @@ fn clean_repository_has_no_design_backups() {
 
 #[test]
 fn git_tree_inspection_failure_fails_closed() {
-    // A non-git directory: ls-tree fails, so fail closed (return true).
+    // An invalid private Git marker makes discovery fail, even when isolated
+    // TEMP is beneath the real repository. Never discover an ancestor Root.
     let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join(".git"), "gitdir: absent-private-admin\n").unwrap();
     let result = branch_has_design_backups(tmp.path(), "master");
     assert!(
         result.unwrap(),

@@ -196,69 +196,99 @@ fn external_repo_without_mine_assets_passes_release_preflight_gates() {
 // migration, and CWD-vs---repo version resolution).
 // ---------------------------------------------------------------------------
 
-/// Builds a terminal external repo: git repo on `main`, `mine init` applied,
-/// a workspace graph opened and committed, so every generic preflight gate
+/// Builds a terminal external repo: `main` stable baseline and Root `dev`,
+/// own approved Design and native workspace checkpoint, so each generic gate
 /// except the one under test passes. Returns the temp dir.
 fn build_terminal_external_repo() -> tempfile::TempDir {
     let tmp = tempfile::tempdir().unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["init", "--quiet", "-b", "main"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["config", "user.email", "t@t"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["config", "user.name", "t"])
-        .status()
-        .unwrap();
+    super::fixture_git(tmp.path(), &["init", "--quiet", "-b", "main"]);
+    for (key, value) in [
+        ("user.email", "fixture@example.invalid"),
+        ("user.name", "Release fixture"),
+        ("commit.gpgSign", "false"),
+        ("core.autocrlf", "false"),
+    ] {
+        super::fixture_git(tmp.path(), &["config", key, value]);
+    }
     std::fs::write(tmp.path().join("README.md"), "external product\n").unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["add", "README.md"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["commit", "--quiet", "-m", "init"])
-        .status()
-        .unwrap();
+    super::fixture_git(tmp.path(), &["add", "--", "README.md"]);
+    super::fixture_git(
+        tmp.path(),
+        &["commit", "--quiet", "-m", "private initial product"],
+    );
     let (exit, env) = run(&["init", "--format", "json"], tmp.path());
-    assert_eq!(exit, 0, "init must succeed: {env}");
-    // The plan workspace belongs on the integration branch, never on the
-    // stable branch. Switch to dev before opening the workspace so the stable
-    // branch stays clean (mirroring the real MINE flow).
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["checkout", "--quiet", "-b", "dev"])
-        .status()
-        .unwrap();
-    // Open a workspace so a terminal graph exists (no plans = all terminal).
-    let (exit, env) = run(&["workspace", "open", "--format", "json"], tmp.path());
-    assert_eq!(exit, 0, "workspace open must succeed: {env}");
-    // Commit the graph so the tree is clean.
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["commit", "--quiet", "-m", "workspace"])
-        .status()
-        .unwrap();
+    assert_eq!(exit, 0, "{env}");
+
+    // Freeze ADRs only after both working-tree and index attribute policy
+    // have the real init-generated managed baseline. Do not waive the native
+    // byte-preservation gate just to construct this release fixture.
+    super::fixture_git(
+        tmp.path(),
+        &["add", "--", ".mine/.gitattributes", ".mine/.gitignore"],
+    );
+    super::fixture_git(
+        tmp.path(),
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "private managed attribute baseline",
+        ],
+    );
+
+    // Explicit private governance isolates asset parity from missing approval.
+    let decision = ".mine/design/decisions/0001-external-fixture.md";
+    std::fs::create_dir_all(tmp.path().join(".mine/design/decisions")).unwrap();
+    std::fs::write(
+        tmp.path().join(decision),
+        "# External fixture decision\n\nNo bundled MINE agent assets.\n",
+    )
+    .unwrap();
+    for args in [
+        vec![
+            "adr",
+            "add",
+            "--id",
+            "ADR-0001",
+            "--path",
+            decision,
+            "--title",
+            "External fixture",
+        ],
+        vec!["adr", "propose", "--id", "ADR-0001"],
+        vec![
+            "adr",
+            "approve",
+            "--id",
+            "ADR-0001",
+            "--by",
+            "fixture-owner",
+            "--note",
+            "explicit private fixture approval",
+        ],
+    ] {
+        let (exit, env) = run(&args, tmp.path());
+        assert_eq!(exit, 0, "{env}");
+    }
+    super::managed_private_dev(tmp.path());
+    let (exit, env) = run(
+        &[
+            "workspace",
+            "open",
+            "--actor",
+            "fixture-planner",
+            "--expected-revision",
+            "0",
+            "--format",
+            "json",
+        ],
+        tmp.path(),
+    );
+    assert_eq!(exit, 0, "workspace open: {env}");
+    assert_eq!(
+        super::fixture_git(tmp.path(), &["status", "--porcelain=v1", "-uall"]),
+        ""
+    );
     tmp
 }
 
@@ -304,70 +334,17 @@ fn external_repo_with_unrelated_skills_is_not_blocked() {
 
 #[test]
 fn release_version_reads_target_repo_when_cwd_differs() {
-    // Regression: `mine --repo B release` from CWD=A must resolve B's version
-    // (P0-2). Previously resolve_release_version used std::env::current_dir().
-    let repo_a = tempfile::tempdir().unwrap();
-    let repo_b = tempfile::tempdir().unwrap();
-    for (r, name) in [(&repo_a, "A"), (&repo_b, "B")] {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(r.path())
-            .args(["init", "--quiet", "-b", "main"])
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(r.path())
-            .args(["config", "user.email", "t@t"])
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(r.path())
-            .args(["config", "user.name", "t"])
-            .status()
-            .unwrap();
-        std::fs::write(r.path().join("README.md"), format!("repo {name}\n")).unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(r.path())
-            .args(["add", "README.md"])
-            .status()
-            .unwrap();
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(r.path())
-            .args(["commit", "--quiet", "-m", "init"])
-            .status()
-            .unwrap();
-    }
-    let (exit, _env) = run(&["init", "--format", "json"], repo_a.path());
-    assert_eq!(exit, 0);
-    let (exit, _env) = run(&["init", "--format", "json"], repo_b.path());
-    assert_eq!(exit, 0);
-    // Set B's version distinctively.
-    let cfg_b = repo_b.path().join(".mine/config.toml");
-    let text = std::fs::read_to_string(&cfg_b).unwrap();
-    std::fs::write(
-        &cfg_b,
-        text.replace("0.1.0", "9.9.9").replace("0.1.1", "9.9.9"),
-    )
-    .unwrap();
-    // Open a workspace in B so preflight reaches version resolution.
-    let (exit, _env) = run(&["workspace", "open", "--format", "json"], repo_b.path());
-    assert_eq!(exit, 0, "workspace open in B must succeed");
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_b.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_b.path())
-        .args(["commit", "--quiet", "-m", "ws"])
-        .status()
-        .unwrap();
+    // The actual child must read B's version, never process CWD A's config.
+    let repo_a = build_terminal_external_repo();
+    let repo_b = build_terminal_external_repo();
+    let mut config = mine::cli::context::load_config(repo_b.path()).unwrap();
+    config.mine_code_version = "9.9.9".into();
+    std::fs::write(repo_b.path().join(".mine/config.toml"), config.to_toml()).unwrap();
+    super::fixture_git(repo_b.path(), &["add", "--", ".mine/config.toml"]);
+    super::fixture_git(
+        repo_b.path(),
+        &["commit", "--quiet", "-m", "distinct private B version"],
+    );
 
     // Run the REAL compiled binary from CWD=repo_a targeting --repo repo_b.
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_mine"));
@@ -414,7 +391,7 @@ fn init_repairs_stale_stable_branch_on_main_only_repo() {
     std::fs::write(tmp.path().join("README.md"), "x\n").unwrap();
     // Write a stale v0.1.1-style config + valid design marker + index.
     std::fs::create_dir_all(tmp.path().join(".mine")).unwrap();
-    std::fs::create_dir_all(tmp.path().join("docs/design")).unwrap();
+    std::fs::create_dir_all(tmp.path().join(".mine/design")).unwrap();
     std::fs::write(
         tmp.path().join(".mine/config.toml"),
         r#"schema_version = 1
@@ -426,30 +403,30 @@ stable = "master"
 integration = "dev"
 
 [design]
-root = "docs/design/index.md"
-marker = "docs/design/.mine-design.toml"
+root = ".mine/design/index.md"
+marker = ".mine/design/.mine-design.toml"
 language = "en"
 index_soft_limit_lines = 250
 leaf_soft_limit_lines = 400
 
 [plan]
-root = "docs/plan"
+root = ".mine/plan"
 ephemeral = true
 purge_before_stable_release = true
 
 [graph]
-source = "docs/plan/execution-graph.toml"
-rendered = "docs/plan/execution-graph.md"
+source = ".mine/plan/execution-graph.toml"
+rendered = ".mine/plan/execution-graph.md"
 lock_timeout_ms = 5000
 "#,
     )
     .unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/.mine-design.toml"),
+        tmp.path().join(".mine/design/.mine-design.toml"),
         "schema_version = 1\nmanaged_by = \"MINE\"\nrepository_id = \"stale-repo\"\ncreated_at = \"2026-07-23T00:00:00Z\"\n",
     )
     .unwrap();
-    std::fs::write(tmp.path().join("docs/design/index.md"), "# Index\n").unwrap();
+    std::fs::write(tmp.path().join(".mine/design/index.md"), "# Index\n").unwrap();
     std::process::Command::new("git")
         .arg("-C")
         .arg(tmp.path())
@@ -484,7 +461,7 @@ lock_timeout_ms = 5000
     );
 
     // After repair, doctor must be healthy on the graph-less stable tree
-    // (main branch, no docs/plan/), per the stable-tree doctor contract.
+    // (main branch, no .mine/plan/), per the stable-tree doctor contract.
     let (exit, env) = run(&["doctor", "--format", "json"], tmp.path());
     assert_eq!(exit, 0, "doctor must succeed after repair: {env}");
     let checks = env["data"]["checks"].as_array().unwrap();
@@ -504,93 +481,46 @@ lock_timeout_ms = 5000
 
 #[test]
 fn release_reports_stale_stable_branch_as_decisive_error() {
-    // Before repair, `mine release` on a repo whose configured stable branch
-    // does not exist must fail with a clear, actionable error -- never a
-    // silent empty stable_commit.
-    let tmp = tempfile::tempdir().unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["init", "--quiet", "-b", "main"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["config", "user.email", "t@t"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["config", "user.name", "t"])
-        .status()
-        .unwrap();
-    std::fs::write(tmp.path().join("README.md"), "x\n").unwrap();
-    std::fs::create_dir_all(tmp.path().join(".mine")).unwrap();
-    std::fs::create_dir_all(tmp.path().join("docs/design")).unwrap();
+    // Native open requires a real stable baseline. Seed valid history first,
+    // then explicitly damage private configuration/graph to test read-only
+    // preflight, rather than expecting open to authorize a missing baseline.
+    let tmp = build_terminal_external_repo();
+    let mut config = mine::cli::context::load_config(tmp.path()).unwrap();
+    config.branches.stable = "master".into();
+    std::fs::write(tmp.path().join(".mine/config.toml"), config.to_toml()).unwrap();
+    let mut graph: mine::domain::graph::PlanWorkspace =
+        toml::from_str(&std::fs::read_to_string(tmp.path().join(&config.graph.source)).unwrap())
+            .unwrap();
+    graph.stable_branch = "master".into();
     std::fs::write(
-        tmp.path().join(".mine/config.toml"),
-        r#"schema_version = 1
-repository_id = "stale-repo"
-mine_code_version = "0.1.1"
-
-[branches]
-stable = "master"
-integration = "dev"
-
-[design]
-root = "docs/design/index.md"
-marker = "docs/design/.mine-design.toml"
-language = "en"
-index_soft_limit_lines = 250
-leaf_soft_limit_lines = 400
-
-[plan]
-root = "docs/plan"
-ephemeral = true
-purge_before_stable_release = true
-
-[graph]
-source = "docs/plan/execution-graph.toml"
-rendered = "docs/plan/execution-graph.md"
-lock_timeout_ms = 5000
-"#,
+        tmp.path().join(&config.graph.source),
+        toml::to_string(&graph).unwrap(),
     )
     .unwrap();
     std::fs::write(
-        tmp.path().join("docs/design/.mine-design.toml"),
-        "schema_version = 1\nmanaged_by = \"MINE\"\nrepository_id = \"stale-repo\"\ncreated_at = \"2026-07-23T00:00:00Z\"\n",
+        tmp.path().join(&config.graph.rendered),
+        mine::infrastructure::toml_store::render_markdown(&graph).unwrap(),
     )
     .unwrap();
-    std::fs::write(tmp.path().join("docs/design/index.md"), "# Index\n").unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["commit", "--quiet", "-m", "stale tree"])
-        .status()
-        .unwrap();
-    // Open a workspace so preflight proceeds past the graph gate.
-    let (exit, env) = run(&["workspace", "open", "--format", "json"], tmp.path());
-    assert_eq!(exit, 0, "workspace open must succeed: {env}");
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["add", "-A"])
-        .status()
-        .unwrap();
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(tmp.path())
-        .args(["commit", "--quiet", "-m", "ws"])
-        .status()
-        .unwrap();
+    super::fixture_git(
+        tmp.path(),
+        &[
+            "add",
+            "--",
+            ".mine/config.toml",
+            &config.graph.source,
+            &config.graph.rendered,
+        ],
+    );
+    super::fixture_git(
+        tmp.path(),
+        &[
+            "commit",
+            "--quiet",
+            "-m",
+            "explicit private missing-stable corruption",
+        ],
+    );
 
     let (exit, env) = run(&["release", "--format", "json"], tmp.path());
     assert_eq!(exit, 0, "preflight must not crash: {env}");

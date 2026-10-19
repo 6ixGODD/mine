@@ -12,6 +12,7 @@ use crate::domain::config::MineConfig;
 use crate::domain::design_marker::DesignMarker;
 use crate::domain::error::MineResult;
 use crate::infrastructure::git;
+use crate::infrastructure::graph_snapshot::resolve_contained;
 
 /// A design-validate outcome (shared DTO for CLI and MCP).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -39,9 +40,24 @@ impl DesignService {
         config: &MineConfig,
     ) -> MineResult<DesignValidateResult> {
         let mut warnings: Vec<DesignWarning> = Vec::new();
-        let marker_path = repo_root.join(&config.design.marker);
-        let marker_ok = marker_path.exists();
-        let index_ok = repo_root.join("docs/design/index.md").exists();
+        let layout = config.layout()?;
+        let marker_path = resolve_contained(repo_root, layout.design_marker())?;
+        let marker_ok = if marker_path.is_file() {
+            let marker =
+                DesignMarker::parse(&marker_path, &std::fs::read_to_string(&marker_path)?)?;
+            crate::domain::design_marker::classify(
+                &resolve_contained(repo_root, layout.design_dir())?,
+                &marker_path,
+                true,
+                true,
+                Some(&marker),
+                Some(&config.repository_id),
+            )?;
+            true
+        } else {
+            false
+        };
+        let index_ok = resolve_contained(repo_root, layout.design_index())?.is_file();
         let mut ok = true;
         if !marker_ok {
             // An absent marker is either a namespace conflict (design dir
@@ -51,7 +67,7 @@ impl DesignService {
         if !index_ok {
             warnings.push(DesignWarning {
                 code: "MINE_DESIGN_INDEX_MISSING".to_string(),
-                message: "docs/design/index.md missing".to_string(),
+                message: format!("{} missing", layout.design_index().as_str()),
             });
             ok = false;
         }
@@ -59,14 +75,11 @@ impl DesignService {
         // branch (read-only Git evidence; never mutates Git).
         if git::current_branch(repo_root).ok().flatten().as_deref()
             == Some(config.branches.stable.as_str())
-            && repo_root
-                .join("docs/plan")
-                .join("execution-graph.toml")
-                .exists()
+            && resolve_contained(repo_root, layout.graph_source())?.exists()
         {
             warnings.push(DesignWarning {
                 code: "MINE_PLANS_ON_STABLE".to_string(),
-                message: "docs/plan found on the stable branch".to_string(),
+                message: format!("{} found on the stable branch", layout.plan_dir().as_str()),
             });
         }
         Ok(DesignValidateResult {
@@ -77,20 +90,27 @@ impl DesignService {
 
     /// Reports managed/unmanaged design status. Read-only.
     pub fn status(repo_root: &std::path::Path, config: &MineConfig) -> MineResult<DesignStatus> {
-        let marker_path = repo_root.join(&config.design.marker);
-        let marker = marker_path.exists().then(|| {
-            std::fs::read_to_string(&marker_path)
-                .ok()
-                .and_then(|c| DesignMarker::parse(&marker_path, &c).ok())
-        });
+        let layout = config.layout()?;
+        let marker_path = resolve_contained(repo_root, layout.design_marker())?;
+        let marker = if marker_path.is_file() {
+            let marker =
+                DesignMarker::parse(&marker_path, &std::fs::read_to_string(&marker_path)?)?;
+            crate::domain::design_marker::classify(
+                &resolve_contained(repo_root, layout.design_dir())?,
+                &marker_path,
+                true,
+                true,
+                Some(&marker),
+                Some(&config.repository_id),
+            )?;
+            Some(marker)
+        } else {
+            None
+        };
         Ok(DesignStatus {
             managed: marker.is_some(),
-            repository_id: marker
-                .as_ref()
-                .and_then(|m| m.as_ref().map(|m| m.repository_id.clone())),
-            created_at: marker
-                .as_ref()
-                .and_then(|m| m.as_ref().map(|m| m.created_at.clone())),
+            repository_id: marker.as_ref().map(|m| m.repository_id.clone()),
+            created_at: marker.as_ref().map(|m| m.created_at.clone()),
             design_root: config.design.root.clone(),
         })
     }
@@ -106,7 +126,7 @@ impl DesignService {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .map(|parent| parent.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|| "docs/design".to_string())
+            .unwrap_or_else(|| crate::domain::config::GovernanceLayout::DESIGN_DIR.to_string())
     }
 }
 
@@ -138,22 +158,22 @@ mod tests {
                 integration: "dev".to_string(),
             },
             design: DesignConfig {
-                root: "docs/design/index.md".to_string(),
-                marker: "docs/design/.mine-design.toml".to_string(),
+                root: ".mine/design/index.md".to_string(),
+                marker: ".mine/design/.mine-design.toml".to_string(),
                 language: "en".to_string(),
                 index_soft_limit_lines: 250,
                 leaf_soft_limit_lines: 400,
             },
             plan: PlanConfig {
-                root: "docs/plan".to_string(),
+                root: ".mine/plan".to_string(),
                 ephemeral: true,
                 purge_before_stable_release: true,
                 worktrees_root: ".mine/worktrees".to_string(),
                 shared_environment_root: ".".to_string(),
             },
             graph: GraphConfig {
-                source: "docs/plan/execution-graph.toml".to_string(),
-                rendered: "docs/plan/execution-graph.md".to_string(),
+                source: ".mine/plan/execution-graph.toml".to_string(),
+                rendered: ".mine/plan/execution-graph.md".to_string(),
                 lock_timeout_ms: 5000,
             },
             adr: AdrConfig::default(),
@@ -176,7 +196,7 @@ mod tests {
     #[test]
     fn validate_ok_when_marker_and_index_present() {
         let dir = tempfile::tempdir().unwrap();
-        let design = dir.path().join("docs/design");
+        let design = dir.path().join(".mine/design");
         std::fs::create_dir_all(&design).unwrap();
         let marker = DesignMarker::new("repo".to_string(), "2026-07-23T00:00:00Z".to_string());
         std::fs::write(design.join(".mine-design.toml"), marker.to_toml()).unwrap();
@@ -189,7 +209,7 @@ mod tests {
     #[test]
     fn status_reports_managed_marker() {
         let dir = tempfile::tempdir().unwrap();
-        let design = dir.path().join("docs/design");
+        let design = dir.path().join(".mine/design");
         std::fs::create_dir_all(&design).unwrap();
         let marker = DesignMarker::new("repo-7".to_string(), "2026-07-23T00:00:00Z".to_string());
         std::fs::write(design.join(".mine-design.toml"), marker.to_toml()).unwrap();

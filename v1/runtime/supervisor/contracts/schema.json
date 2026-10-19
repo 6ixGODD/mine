@@ -1,0 +1,2386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RuntimeContractSchema",
+  "type": "object",
+  "properties": {
+    "effective_selection": {
+      "$ref": "#/$defs/RuntimeEffectiveSelection"
+    },
+    "event": {
+      "$ref": "#/$defs/Event"
+    },
+    "failure": {
+      "$ref": "#/$defs/RuntimeFailure"
+    },
+    "handshake": {
+      "$ref": "#/$defs/Handshake"
+    },
+    "inspection": {
+      "$ref": "#/$defs/Inspection"
+    },
+    "quiescence": {
+      "$ref": "#/$defs/QuiescenceObservation"
+    },
+    "request": {
+      "$ref": "#/$defs/Request"
+    },
+    "response": {
+      "$ref": "#/$defs/Response"
+    },
+    "snapshot": {
+      "$ref": "#/$defs/RuntimeCapabilitySnapshot"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "handshake",
+    "request",
+    "response",
+    "event",
+    "snapshot",
+    "effective_selection",
+    "failure",
+    "quiescence",
+    "inspection"
+  ],
+  "$defs": {
+    "Admission": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "blocked"
+      ]
+    },
+    "AssignmentEpoch": {
+      "description": "Canonical decimal 0..9223372036854775807; consumers additionally enforce this numeric bound.",
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "AttemptId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "AttemptScope": {
+      "type": "object",
+      "properties": {
+        "assignment_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "assignment_revision": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/AttemptId"
+        },
+        "fencing_epoch": {
+          "$ref": "#/$defs/AssignmentEpoch"
+        },
+        "generation": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "principal_id": {
+          "$ref": "#/$defs/PrincipalId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "principal_id",
+        "assignment_id",
+        "assignment_revision",
+        "attempt_id",
+        "generation",
+        "fencing_epoch"
+      ]
+    },
+    "AutomaticContinuation": {
+      "type": "string",
+      "enum": [
+        "stopped",
+        "possible",
+        "unknown"
+      ]
+    },
+    "Call": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "discover"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/RuntimeContext"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "context"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "create"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "context": {
+                  "$ref": "#/$defs/RuntimeContext"
+                },
+                "display_name": {
+                  "type": "string"
+                },
+                "selection": {
+                  "$ref": "#/$defs/Selection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "context",
+                "selection",
+                "display_name"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "resume"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "context": {
+                  "$ref": "#/$defs/RuntimeContext"
+                },
+                "selection": {
+                  "$ref": "#/$defs/Selection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "context",
+                "binding",
+                "selection"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "rename"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "display_name": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "display_name"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "submit"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "content": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/Content"
+                  }
+                },
+                "delivery_id": {
+                  "$ref": "#/$defs/OperationId"
+                },
+                "expected_native_turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "mode": {
+                  "$ref": "#/$defs/SubmitMode"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "delivery_id",
+                "mode",
+                "content"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "interrupt"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "discard_pending": {
+                  "type": "boolean"
+                },
+                "expected_native_turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "reason",
+                "discard_pending"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "inspect"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/SessionBinding"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "create_operation_id": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OperationId"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "shutdown"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "reason"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "CapabilityState": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "unsupported",
+        "unknown"
+      ]
+    },
+    "Choices": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "supported"
+            },
+            "values": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "values"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unsupported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "Confidence": {
+      "type": "string",
+      "enum": [
+        "confirmed",
+        "unconfirmed"
+      ]
+    },
+    "Content": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "text"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "text"
+          ]
+        }
+      ]
+    },
+    "Digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "Discovery": {
+      "type": "object",
+      "properties": {
+        "config_fingerprint": {
+          "$ref": "#/$defs/Digest"
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelCapability"
+          }
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "runtime_version": {
+          "type": "string"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/SnapshotId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "snapshot_id",
+        "provider",
+        "runtime_version",
+        "config_fingerprint",
+        "models"
+      ]
+    },
+    "EffectOutcome": {
+      "type": "string",
+      "enum": [
+        "not_sent",
+        "rejected",
+        "accepted",
+        "unknown"
+      ]
+    },
+    "EntityRevision": {
+      "description": "Canonical decimal 0..9223372036854775807; consumers additionally enforce this numeric bound.",
+      "type": "string",
+      "maxLength": 19,
+      "pattern": "^(0|[1-9][0-9]{0,18})$"
+    },
+    "Event": {
+      "type": "object",
+      "properties": {
+        "connection_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "event": {
+          "$ref": "#/$defs/EventPayload"
+        },
+        "event_seq": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "native_session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "native_turn_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observed_at": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperationId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OperationId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/AttemptScope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "project_id",
+        "scope",
+        "connection_id",
+        "event_seq",
+        "observed_at",
+        "event"
+      ]
+    },
+    "EventPayload": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "session_bound"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "effective_selection": {
+                  "$ref": "#/$defs/RuntimeEffectiveSelection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "effective_selection"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "selection_observed"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "applies_from": {
+                  "$ref": "#/$defs/SelectionAppliesFrom"
+                },
+                "effective_selection": {
+                  "$ref": "#/$defs/RuntimeEffectiveSelection"
+                },
+                "reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "effective_selection",
+                "applies_from"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "input_disposition"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "delivery_id": {
+                  "$ref": "#/$defs/OperationId"
+                },
+                "disposition": {
+                  "$ref": "#/$defs/InputDisposition"
+                },
+                "native_turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "delivery_id",
+                "disposition"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "turn_started"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "turn": {
+                  "$ref": "#/$defs/TurnReference"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "turn"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text_delta"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "chunk_index": {
+                  "$ref": "#/$defs/EntityRevision"
+                },
+                "stream_id": {
+                  "$ref": "#/$defs/OperationId"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "stream_id",
+                "chunk_index",
+                "text"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool_started"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "owned_process": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OwnedProcess"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tool_call_id": {
+                  "type": "string"
+                },
+                "tool_category": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "tool_call_id",
+                "tool_category"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "tool_finished"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "owned_process": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/OwnedProcess"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "$ref": "#/$defs/ToolFinishedStatus"
+                },
+                "tool_call_id": {
+                  "type": "string"
+                },
+                "tool_category": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "tool_call_id",
+                "tool_category",
+                "status"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "approval_requested"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "approval_id": {
+                  "$ref": "#/$defs/OperationId"
+                },
+                "resource_scope_ref": {
+                  "type": "string"
+                },
+                "summary": {
+                  "type": "string"
+                },
+                "tool_category": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "approval_id",
+                "tool_category",
+                "summary",
+                "resource_scope_ref"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "turn_finished"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "delivery_ids": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/$defs/OperationId"
+                  }
+                },
+                "failure": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/RuntimeFailure"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "$ref": "#/$defs/TurnFinishedStatus"
+                },
+                "usage": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/MeasuredUsage"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "status",
+                "delivery_ids"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "quiescence_observed"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "observation": {
+                  "$ref": "#/$defs/QuiescenceObservation"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "observation"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "diagnostic"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "code": {
+                  "$ref": "#/$defs/RuntimeFailureCode"
+                },
+                "evidence_refs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "message": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message",
+                "evidence_refs"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "runtime_exited"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "exit_code": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int32"
+                },
+                "observation": {
+                  "$ref": "#/$defs/QuiescenceObservation"
+                },
+                "process": {
+                  "$ref": "#/$defs/OwnedProcess"
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "process",
+                "observation"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "ExternalEffects": {
+      "type": "string",
+      "enum": [
+        "settled",
+        "pending",
+        "unknown"
+      ]
+    },
+    "FailureStage": {
+      "type": "string",
+      "enum": [
+        "preflight",
+        "spawn",
+        "initialize",
+        "create",
+        "resume",
+        "select",
+        "submit",
+        "stream",
+        "interrupt",
+        "inspect",
+        "shutdown"
+      ]
+    },
+    "Handshake": {
+      "type": "object",
+      "properties": {
+        "adapter_version": {
+          "type": "string"
+        },
+        "connection_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "kind": {
+          "$ref": "#/$defs/HandshakeKind"
+        },
+        "limits": {
+          "$ref": "#/$defs/Limits"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "schema_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "kind",
+        "connection_id",
+        "adapter_version",
+        "schema_digest",
+        "limits"
+      ]
+    },
+    "HandshakeKind": {
+      "type": "string",
+      "enum": [
+        "hello",
+        "hello_ack"
+      ]
+    },
+    "InputDisposition": {
+      "type": "string",
+      "enum": [
+        "accepted",
+        "queued",
+        "handled"
+      ]
+    },
+    "Inspection": {
+      "type": "object",
+      "properties": {
+        "binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "matched": {
+          "$ref": "#/$defs/InspectionMatch"
+        },
+        "observation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuiescenceObservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuntimeEffectiveSelection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "matched",
+        "evidence_refs"
+      ]
+    },
+    "InspectionMatch": {
+      "type": "string",
+      "enum": [
+        "exact",
+        "absent",
+        "ambiguous",
+        "unknown"
+      ]
+    },
+    "Limits": {
+      "type": "object",
+      "properties": {
+        "control_events": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "diagnostic_tail_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "frame_bytes": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "pending_requests": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "frame_bytes",
+        "pending_requests",
+        "control_events",
+        "diagnostic_tail_bytes"
+      ]
+    },
+    "MeasuredUsage": {
+      "type": "object",
+      "properties": {
+        "amount_decimal": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "currency": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "output_tokens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityRevision"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "Method": {
+      "type": "string",
+      "enum": [
+        "discover",
+        "create",
+        "resume",
+        "rename",
+        "submit",
+        "interrupt",
+        "inspect",
+        "shutdown"
+      ]
+    },
+    "MethodCapability": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "$ref": "#/$defs/Method"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "$ref": "#/$defs/CapabilityState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "state"
+      ]
+    },
+    "MethodResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "discover"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "snapshot": {
+                  "$ref": "#/$defs/RuntimeCapabilitySnapshot"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "snapshot"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "create"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "admission": {
+                  "$ref": "#/$defs/Admission"
+                },
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effective_selection": {
+                  "$ref": "#/$defs/RuntimeEffectiveSelection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "effective_selection",
+                "admission",
+                "diagnostics"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "resume"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "admission": {
+                  "$ref": "#/$defs/Admission"
+                },
+                "binding": {
+                  "$ref": "#/$defs/SessionBinding"
+                },
+                "diagnostics": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effective_selection": {
+                  "$ref": "#/$defs/RuntimeEffectiveSelection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "binding",
+                "effective_selection",
+                "admission",
+                "diagnostics"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "rename"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "observed_name": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "observed_name"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "submit"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "disposition": {
+                  "$ref": "#/$defs/InputDisposition"
+                },
+                "native_turn_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "disposition"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "interrupt"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "observation": {
+                  "$ref": "#/$defs/QuiescenceObservation"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "observation"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "inspect"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "inspection": {
+                  "$ref": "#/$defs/Inspection"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "inspection"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "method": {
+              "type": "string",
+              "const": "shutdown"
+            },
+            "payload": {
+              "type": "object",
+              "properties": {
+                "observation": {
+                  "$ref": "#/$defs/QuiescenceObservation"
+                }
+              },
+              "additionalProperties": false,
+              "required": [
+                "observation"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "method",
+            "payload"
+          ]
+        }
+      ]
+    },
+    "ModelCapability": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/Choices"
+        },
+        "model": {
+          "type": "string"
+        },
+        "speed": {
+          "$ref": "#/$defs/Choices"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "effort",
+        "speed"
+      ]
+    },
+    "ModelDetails": {
+      "type": "object",
+      "properties": {
+        "default_effort": {
+          "$ref": "#/$defs/ObservedValue"
+        },
+        "default_speed": {
+          "$ref": "#/$defs/ObservedValue"
+        },
+        "display_name": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "is_runtime_default": {
+          "type": "boolean"
+        },
+        "model": {
+          "type": "string"
+        },
+        "resolved_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "display_name",
+        "is_runtime_default",
+        "default_effort",
+        "default_speed",
+        "evidence_refs"
+      ]
+    },
+    "ObservationDetails": {
+      "type": "object",
+      "properties": {
+        "availability_state": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "resolved_identity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "evidence_refs"
+      ]
+    },
+    "ObservedValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "observed"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unsupported"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        }
+      ]
+    },
+    "OperationId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "OwnedProcess": {
+      "type": "object",
+      "properties": {
+        "launch_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "state": {
+          "$ref": "#/$defs/ProcessState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "pid",
+        "launch_id",
+        "state"
+      ]
+    },
+    "PendingInputs": {
+      "type": "string",
+      "enum": [
+        "empty",
+        "present",
+        "unknown"
+      ]
+    },
+    "PrincipalId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "ProcessState": {
+      "type": "string",
+      "enum": [
+        "running",
+        "exited",
+        "unknown"
+      ]
+    },
+    "ProjectId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "Provider": {
+      "type": "string",
+      "enum": [
+        "codex",
+        "claude",
+        "pi"
+      ]
+    },
+    "QuiescenceObservation": {
+      "type": "object",
+      "properties": {
+        "automatic_continuation": {
+          "$ref": "#/$defs/AutomaticContinuation"
+        },
+        "confidence": {
+          "$ref": "#/$defs/Confidence"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "external_effects": {
+          "$ref": "#/$defs/ExternalEffects"
+        },
+        "observed_at": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "owned_processes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OwnedProcess"
+          }
+        },
+        "pending_inputs": {
+          "$ref": "#/$defs/PendingInputs"
+        },
+        "turn_state": {
+          "$ref": "#/$defs/TurnState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "observed_at",
+        "turn_state",
+        "pending_inputs",
+        "automatic_continuation",
+        "owned_processes",
+        "external_effects",
+        "evidence_refs",
+        "confidence"
+      ]
+    },
+    "Request": {
+      "type": "object",
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/Call"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "request_id",
+        "operation_id",
+        "project_id",
+        "scope",
+        "deadline_ms",
+        "call"
+      ]
+    },
+    "RequestedValue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "runtime_default"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "exact"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "operation_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/ResponseOutcome"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "protocol": {
+          "type": "string"
+        },
+        "request_id": {
+          "$ref": "#/$defs/OperationId"
+        },
+        "scope": {
+          "$ref": "#/$defs/Scope"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "request_id",
+        "operation_id",
+        "project_id",
+        "scope",
+        "outcome"
+      ]
+    },
+    "ResponseOutcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/MethodResult"
+            },
+            "status": {
+              "type": "string",
+              "const": "ok"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "result"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "error": {
+              "$ref": "#/$defs/RuntimeFailure"
+            },
+            "status": {
+              "type": "string",
+              "const": "error"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "error"
+          ]
+        }
+      ]
+    },
+    "RuntimeCapabilitySnapshot": {
+      "type": "object",
+      "properties": {
+        "adapter_version": {
+          "type": "string"
+        },
+        "credential_profile_ref": {
+          "type": "string"
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "discovery": {
+          "$ref": "#/$defs/Discovery"
+        },
+        "expires_at": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "methods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MethodCapability"
+          }
+        },
+        "model_details": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelDetails"
+          }
+        },
+        "observed_at": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "protocol_schema_digest": {
+          "$ref": "#/$defs/Digest"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "discovery",
+        "adapter_version",
+        "protocol_schema_digest",
+        "credential_profile_ref",
+        "observed_at",
+        "expires_at",
+        "methods",
+        "model_details",
+        "diagnostics"
+      ]
+    },
+    "RuntimeContext": {
+      "type": "object",
+      "properties": {
+        "config_fingerprint": {
+          "$ref": "#/$defs/Digest"
+        },
+        "credential_profile_ref": {
+          "type": "string"
+        },
+        "execution_cwd": {
+          "type": "string"
+        },
+        "policy_revision": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "runtime_profile_ref": {
+          "type": "string"
+        },
+        "trusted_config_root": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "runtime_profile_ref",
+        "credential_profile_ref",
+        "trusted_config_root",
+        "execution_cwd",
+        "config_fingerprint",
+        "policy_revision"
+      ]
+    },
+    "RuntimeEffectiveSelection": {
+      "type": "object",
+      "properties": {
+        "details": {
+          "$ref": "#/$defs/SelectionDetails"
+        },
+        "effort": {
+          "$ref": "#/$defs/ObservedValue"
+        },
+        "model": {
+          "$ref": "#/$defs/ObservedValue"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/SnapshotId"
+        },
+        "speed": {
+          "$ref": "#/$defs/ObservedValue"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "snapshot_id",
+        "provider",
+        "model",
+        "effort",
+        "speed",
+        "details"
+      ]
+    },
+    "RuntimeFailure": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/RuntimeFailureCode"
+        },
+        "evidence_refs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "message": {
+          "type": "string"
+        },
+        "native_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionBinding"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outcome": {
+          "$ref": "#/$defs/EffectOutcome"
+        },
+        "provider_code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "retry_after_ms": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0
+        },
+        "stage": {
+          "$ref": "#/$defs/FailureStage"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "stage",
+        "outcome",
+        "message",
+        "evidence_refs"
+      ]
+    },
+    "RuntimeFailureCode": {
+      "type": "string",
+      "enum": [
+        "AUTH_REQUIRED",
+        "ACCESS_DENIED",
+        "QUOTA_OR_RATE_LIMIT",
+        "TRANSIENT_PROVIDER",
+        "RUNTIME_UNAVAILABLE",
+        "VERSION_UNSUPPORTED",
+        "CONFIG_CONTEXT_MISMATCH",
+        "SELECTION_UNSUPPORTED",
+        "CAPABILITY_STALE",
+        "SESSION_NOT_FOUND",
+        "SESSION_CORRUPT",
+        "PROTOCOL_INVALID",
+        "PAYLOAD_TOO_LARGE",
+        "BACKPRESSURE",
+        "SPAWN_FAILED",
+        "PROCESS_EXITED",
+        "CANCELLED",
+        "QUIESCENCE_UNCONFIRMED",
+        "PERSISTENCE_FAILED",
+        "UNKNOWN_PROVIDER_FAILURE"
+      ]
+    },
+    "Scope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "project"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "assignment_id": {
+              "$ref": "#/$defs/OperationId"
+            },
+            "assignment_revision": {
+              "$ref": "#/$defs/EntityRevision"
+            },
+            "attempt_id": {
+              "$ref": "#/$defs/AttemptId"
+            },
+            "fencing_epoch": {
+              "$ref": "#/$defs/AssignmentEpoch"
+            },
+            "generation": {
+              "$ref": "#/$defs/EntityRevision"
+            },
+            "kind": {
+              "type": "string",
+              "const": "attempt"
+            },
+            "principal_id": {
+              "$ref": "#/$defs/PrincipalId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "principal_id",
+            "assignment_id",
+            "assignment_revision",
+            "attempt_id",
+            "generation",
+            "fencing_epoch"
+          ]
+        }
+      ]
+    },
+    "Selection": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/RequestedValue"
+        },
+        "model": {
+          "$ref": "#/$defs/RequestedValue"
+        },
+        "project_id": {
+          "$ref": "#/$defs/ProjectId"
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/SnapshotId"
+        },
+        "speed": {
+          "$ref": "#/$defs/RequestedValue"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "snapshot_id",
+        "provider",
+        "model",
+        "effort",
+        "speed"
+      ]
+    },
+    "SelectionAppliesFrom": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "next_turn"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "native_turn"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "SelectionDetails": {
+      "type": "object",
+      "properties": {
+        "effort": {
+          "$ref": "#/$defs/ObservationDetails"
+        },
+        "model": {
+          "$ref": "#/$defs/ObservationDetails"
+        },
+        "speed": {
+          "$ref": "#/$defs/ObservationDetails"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "effort",
+        "speed"
+      ]
+    },
+    "SessionBinding": {
+      "type": "object",
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/AttemptId"
+        },
+        "generation": {
+          "$ref": "#/$defs/EntityRevision"
+        },
+        "native_session_id": {
+          "type": "string"
+        },
+        "native_storage_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "native_thread_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "$ref": "#/$defs/Provider"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "native_session_id",
+        "attempt_id",
+        "generation"
+      ]
+    },
+    "SnapshotId": {
+      "type": "string",
+      "not": {
+        "const": "00000000-0000-0000-0000-000000000000"
+      },
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "SubmitMode": {
+      "type": "string",
+      "enum": [
+        "start",
+        "steer",
+        "follow_up"
+      ]
+    },
+    "ToolFinishedStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed",
+        "cancelled",
+        "unknown"
+      ]
+    },
+    "TurnFinishedStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "interrupted",
+        "failed"
+      ]
+    },
+    "TurnReference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "native"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "local"
+            },
+            "value": {
+              "$ref": "#/$defs/OperationId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        }
+      ]
+    },
+    "TurnState": {
+      "type": "string",
+      "enum": [
+        "idle",
+        "running",
+        "terminal",
+        "unknown"
+      ]
+    }
+  }
+}

@@ -9,20 +9,24 @@ state, see [Core Concepts](concepts.md).
 
 ## 1. Installation
 
+0.2.0 delivers Windows x86_64 and Linux x86_64. macOS delivery is deferred until
+the dashboard phase; there is no macOS 0.2.0 asset. All four Agent integrations
+(Claude Code, Codex, Pi, OpenCode) remain available on supported hosts.
+
 ### Windows
 
 Run the following in PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-### macOS / Linux
+### Linux x86_64
 
 Run the following in your terminal:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh | sh
 ```
 
 After installation, restart your terminal and verify that MINE is available:
@@ -76,20 +80,20 @@ removes any legacy MINE Skills from `~/.pi/agent/skills`.
 
 The bootstrap installer uses the latest Release by default. To install a specific version, set `MINE_REF`.
 
-For example, to install `v0.1.4`:
+For example, to install `v0.2.0`:
 
 #### Windows
 
 ```powershell
-$env:MINE_REF = "v0.1.4"
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+$env:MINE_REF = "v0.2.0"
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-#### macOS / Linux
+#### Linux x86_64
 
 ```sh
-MINE_REF=v0.1.4 \
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh)"
+MINE_REF=v0.2.0 \
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh)"
 ```
 
 ---
@@ -104,8 +108,12 @@ mine init
 
 A repository normally needs to be initialized only once.
 
-`mine init` creates the repository state required by MINE, including `docs/design/`. It does not design the system for
+`mine init` creates the repository state required by MINE, including `.mine/design/`. It does not design the system for
 you or modify application code.
+
+It leaves user `docs/` untouched. Root configuration determines actual paths;
+do not rewrite an active legacy layout to look like a fresh project. Finish with
+its existing binary first, then use an authorized source-bound terminal cutover.
 
 ### ADR approval and Design readiness
 
@@ -114,7 +122,7 @@ registry is the machine source of status and binds approval to the exact
 decision-body digest:
 
 ```sh
-mine adr add --id ADR-0010 --path docs/design/decisions/0010-example.md --title "Example decision"
+mine adr add --id ADR-0010 --path .mine/design/decisions/0010-example.md --title "Example decision"
 mine adr propose --id ADR-0010
 mine adr show --id ADR-0010
 mine adr approve --id ADR-0010 --by repository-owner --note "Approved for planning"
@@ -123,8 +131,9 @@ mine design readiness --scope plan01
 
 `mine-arch` may prepare and propose a DRAFT ADR, but it cannot approve one or
 infer approval. If an applicable planning-blocking ADR is unresolved,
-readiness reports the blocker and planning must stop. Editing an approved ADR
-body changes its digest and requires a new proposal/approval cycle.
+readiness reports the blocker and planning must stop. An approved ADR body
+is not edited in place: record a new decision/proposal and supersede the
+approved decision through its owner-approved lifecycle.
 
 ---
 
@@ -184,7 +193,7 @@ mine-plan-create <scope to plan>
 
 Plans use canonical hierarchical identities such as `plan01-01` and
 `plan01-02-C01`. The file must be exactly
-`docs/plan/<id>-<lower-kebab-slug>.md`; compensation IDs are contiguous sibling
+`.mine/plan/<id>-<lower-kebab-slug>.md`; compensation IDs are contiguous sibling
 `C` ordinals in the same lineage. Legacy IDs such as `01` are not allocated
 for new Plans.
 
@@ -206,9 +215,9 @@ mine-plan-create
 without a scope, the Skill determines the next work to plan from the current Design, Execution Graph, and repository
 state. This usually requires broader exploration.
 
-If planning reveals that the current Design is insufficient to support the implementation, `mine-plan-create` may invoke
-`mine-arch` itself, update the Design, and then continue planning. The user normally does not need to switch Skills
-manually.
+If Design lacks a material decision, route it to `mine-arch` and obtain the owner's
+approval of the exact scoped ADRs before continuing dependent planning. Bounded
+internal implementation choices do not require another approval cycle.
 
 To inspect the currently executable Plans:
 
@@ -229,7 +238,7 @@ mine plan show --id <id>
 For a Plan in the `READY` state:
 
 ```text
-mine-plan-exec <Plan path>
+mine-plan-exec <Plan ID or registered path>
 ```
 
 After implementation, the Plan moves to:
@@ -241,7 +250,7 @@ IMPLEMENTED
 Then run:
 
 ```text
-mine-plan-review <Plan path>
+mine-plan-review <Plan ID or registered path>
 ```
 
 in an **independent Agent session**.
@@ -288,15 +297,18 @@ not need to edit the Execution Graph by hand.
 
 ## 6. Parallel Execution
 
-If multiple independent Plans are `READY`, they may be executed in parallel.
+`READY` permits attempting execution; it is not ownership. Native wave/start
+checks all held IN_PROGRESS/IMPLEMENTED owners, selected candidates, effective
+responsibilities, worktrees, outputs and pending operations. A stale observer
+must re-read; a timeout never authorizes a duplicate executor.
 
 MINE isolates Plans using separate branches and worktrees, for example:
 
 ```text
 dev
-├── plan/01-api       → worktree A
-├── plan/02-storage   → worktree B
-└── plan/03-ui        → worktree C
+├── plan/plan01-api       → worktree A
+├── plan/plan02-storage   → worktree B
+└── plan/plan03-ui        → worktree C
 ```
 
 You normally do not need to manually:
@@ -309,6 +321,20 @@ You normally do not need to manually:
 - integrate accepted Plan branches into `dev`.
 
 MINE and the corresponding Skills manage these states automatically.
+
+Root remains on the configured integration branch while the workspace is open.
+The Skill carries explicit observer revision/actor and the same prepare operation
+identity through recovery; native graph checkpoints own only their graph pair.
+Do not manually commit/fast-forward pending graph state or repeat uncertain effects.
+Review merges the exact independently reviewed tip, verifies integrated evidence,
+then removes its clean merged worktree/local branch before acceptance completes.
+Rejected branches stay preserved; the next sibling compensation reuses the same
+lineage worktree, with separate mutable outputs.
+
+Scope is responsibility/namespaces plus exclusions and physical mapping, not an
+exhaustive frozen file inventory. Approved internal splits need no permission
+churn; material contracts still need ADR approval. An architect foundation follows
+an explicitly assigned ordinary Plan, real consumer/invariant and independent review.
 
 ### Mutable build and test outputs
 
@@ -326,6 +352,12 @@ namespace even when it reuses its predecessor's lineage worktree. A measured
 exceptionally large output requires an estimate and explicit owner agreement
 on serialization, namespace coarsening, and cleanup before building.
 
+Before re-running expensive gates, check input-bound evidence with current
+source/body/policy/tools/environment/platform/features and artifacts. Reuse still
+applicable evidence; preserve RUN/REUSED/INVALIDATED/NON_REUSABLE/NOT_RUN separately.
+Verification capture/record/check never executes the check itself, and exit0 may
+still report invalidation. Independent/native and changed-input probes remain.
+
 ---
 
 ## 7. Release
@@ -336,7 +368,7 @@ Once all planned work is complete, run the Final Sync:
 mine-sync prepare this repository for stable release
 ```
 
-This reconciles `docs/design/` against the final codebase.
+This reconciles `.mine/design/` against the final codebase.
 
 Then, from an independent Review context, run:
 
@@ -350,7 +382,7 @@ Release Closure performs the local release finalization, including:
 - confirming that the final Design has been synchronized;
 - constructing and validating the stable candidate;
 - checking that product code contains no temporary Plan references from the current development cycle;
-- removing `docs/plan/` and execution reports;
+- removing `.mine/plan/` and execution reports;
 - integrating the final state into stable;
 - cleaning up MINE-managed local branches and worktrees.
 

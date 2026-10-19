@@ -175,6 +175,13 @@ mod tests {
             adr_registry_revision: 0,
             lineage_id: String::new(),
             worktree_path: String::new(),
+            body_sha256: None,
+            ownership: None,
+            ownership_policy: None,
+            clarifications: vec![],
+            acceptance: None,
+            preparations: vec![],
+            started_preparation_generation: None,
         }
     }
 

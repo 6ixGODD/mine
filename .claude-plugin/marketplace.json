@@ -9,7 +9,7 @@
       "name": "mine",
       "source": "./plugins/mine",
       "description": "Architecture, executable planning, governed execution, and adversarial review for coding agents.",
-      "repository": "https://github.com/6ixGODD/mine-is-not-everyones",
+      "repository": "https://github.com/6ixGODD/mine",
       "license": "MIT",
       "category": "Developer Tools",
       "tags": [

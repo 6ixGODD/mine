@@ -8,20 +8,24 @@
 
 ## 1. 安装
 
+0.2.0 交付 Windows x86_64、Linux x86_64。macOS 交付推迟到 dashboard 阶段，
+没有 macOS 0.2.0 产物；这不是原生验证通过。受支持主机上的 Claude Code、Codex、
+Pi、OpenCode 四种集成均保留。
+
 ### Windows
 
 在 PowerShell 中执行：
 
 ```powershell
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-### macOS / Linux
+### Linux x86_64
 
 在终端中执行：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh | sh
+curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh | sh
 ```
 
 安装完成后，重新打开终端，验证安装是否成功：
@@ -69,20 +73,20 @@ Skill。为避免 Pi 加载两份（以及由此产生的冲突告警），当�
 
 bootstrap 默认安装最新 Release。如需安装指定版本，请使用`MINE_REF`。
 
-例如，安装 `v0.1.4`：
+例如，安装 `v0.2.0`：
 
 #### Windows
 
 ```powershell
-$env:MINE_REF = "v0.1.4"
-irm https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.ps1 | iex
+$env:MINE_REF = "v0.2.0"
+irm https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.ps1 | iex
 ```
 
-#### macOS / Linux
+#### Linux x86_64
 
 ```sh
-MINE_REF=v0.1.4 \
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine-is-not-everyones/master/scripts/bootstrap.sh)"
+MINE_REF=v0.2.0 \
+sh -c "$(curl -fsSL https://raw.githubusercontent.com/6ixGODD/mine/master/scripts/bootstrap.sh)"
 ```
 
 ---
@@ -97,7 +101,17 @@ mine init
 
 一个仓库通常只需要初始化一次。
 
-`mine init` 会建立 MINE 所需的仓库状态和 `docs/design/`，但不会替你设计系统或修改业务代码。
+`mine init` 会建立 MINE 所需的仓库状态和 `.mine/design/`，但不会替你设计系统或修改业务代码。
+
+用户 `docs/` 不会被搬动。实际路径以 Root 配置为准；仍在执行的旧布局先用现有版本
+完成，再进行单独授权、绑定真实源证据的终态切换，不能直接改配置冒充迁移完成。
+
+### ADR 与架构基础
+
+`mine-arch` 先把重大架构决策拆成独立 ADR，提出精确正文与摘要，等待 owner 明确批准，
+再进入依赖这些决策的规划。批准后的正文不原地改写，变更通过新决策取代旧决策。
+架构师可以在明确分配的普通 Plan 中实现接口、类型、不变量和最小真实消费者；
+同样经过 prepare/start、独立审查与接受，没有 Root 写代码或自我接受的例外。
 
 ---
 
@@ -170,8 +184,8 @@ mine-plan-create
 
 而不指定 scope，Skill 会自行从 Design、Execution Graph 和仓库状态中寻找下一批需要规划的工作，因此通常会进行范围更广的探索。
 
-如果规划过程中发现当前 Design 不足以支撑实现，`mine-plan-create` 可以主动调用 `mine-arch` 更新 Design，然后继续规划。用户通常不需要手工切换
-Skill。
+如果 Design 缺少重大决策，交由 `mine-arch` 完成对应 ADR 的 owner 批准后，
+再继续依赖它的规划；职责域内不改变契约的文件拆分等局部选择不必反复请示。
 
 查看当前可执行 Plan：
 
@@ -192,7 +206,7 @@ mine plan show --id <id>
 对处于 READY 状态的 Plan：
 
 ```text
-mine-plan-exec <Plan 路径>
+mine-plan-exec <Plan ID 或登记路径>
 ```
 
 执行完成后，Plan 进入：
@@ -204,7 +218,7 @@ IMPLEMENTED
 然后在 **独立的 Agent session** 中运行：
 
 ```text
-mine-plan-review <Plan 路径>
+mine-plan-review <Plan ID 或登记路径>
 ```
 
 **不要**在刚刚执行 `mine-plan-exec` 的同一个上下文中继续 Review。
@@ -246,15 +260,17 @@ Review 可能产生三种结果：
 
 ## 6. 并行执行
 
-如果存在多个彼此独立的 READY Plan，可以并行执行。
+READY 只表示可以尝试执行，不是写权限。原生 wave/start 同时核对所有持有中的
+IN_PROGRESS/IMPLEMENTED owner、候选职责域、worktree、可变输出和 pending 操作。
+观察修订过期要重新读取；超时不允许另起一个重复执行者。
 
 MINE 会使用独立 branch / worktree 隔离不同 Plan，例如：
 
 ```text
 dev
-├── plan/01-api       → worktree A
-├── plan/02-storage   → worktree B
-└── plan/03-ui        → worktree C
+├── plan/plan01-api       → worktree A
+├── plan/plan02-storage   → worktree B
+└── plan/plan03-ui        → worktree C
 ```
 
 通常不需要手工：
@@ -268,6 +284,23 @@ dev
 
 这些状态由 MINE 和对应 Skill 自动管理。
 
+工作区开放期间 Root 保持 integration（通常 dev）。Skill 显式携带观察修订、actor
+和同一个 prepare operation ID；原生 checkpoint 只提交它自己的 graph pair。
+响应不确定时先查询、恢复同一操作，不手工快进图、不重复 merge/cleanup。
+审查者合入精确被审 tip，验证集成结果并清理干净、已合并的 worktree/本地分支后
+才能接受；拒绝保留原分支，下一个同级补偿复用同一个谱系 worktree。
+
+写域以职责/命名空间、排除项与物理映射为边界，不是穷举每个内部文件。
+各种语言的可变 build/test/generated/coverage/package 输出使用
+`<Root>/.mine/build/<精确PlanID>/<输出类别>/`；Rust 设置对应 CARGO_TARGET_DIR。
+环境、下载与安全缓存复用 Root，不能在 worktree 再建 venv、target、node_modules。
+测得磁盘代价异常时先与 owner 协商序列化/共享/清理边界，不静默共享并行可变产物。
+
+重跑昂贵检查前，按当前源码、正文、policy、工具、环境、平台、features 与产物身份
+检查既有证据是否适用，区分 RUN/REUSED/INVALIDATED/NON_REUSABLE/NOT_RUN。
+capture/record/check 不代跑测试；exit0 也可能表示失效。独立、原生和变更输入的
+检查不能被旧收据替代，首次失败与缺失证据必须保留。
+
 ---
 
 ## 7. 发布
@@ -278,7 +311,7 @@ dev
 mine-sync prepare this repository for stable release
 ```
 
-它会根据最终代码重新核对 `docs/design/`。
+它会根据最终代码重新核对 `.mine/design/`。
 
 然后在独立 Review 上下文中执行：
 
@@ -292,7 +325,7 @@ Release Closure 会完成本地发布收口，包括：
 * 确认最终 Design 已同步；
 * 构造并验证 stable candidate；
 * 检查产品代码中是否残留当前开发周期的临时 Plan 引用；
-* 移除 `docs/plan/` 和执行报告；
+* 移除 `.mine/plan/` 和执行报告；
 * 将最终状态集成到 stable；
 * 清理 MINE 管理的本地临时 branch / worktree。
 

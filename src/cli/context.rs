@@ -48,6 +48,7 @@ impl GlobalOpts {
 /// A resolved command context: repository root, configuration, and graph
 /// store. Handlers use this to access MINE state consistently.
 pub struct CommandContext {
+    _request: Option<crate::infrastructure::git_evidence::GitRequestScope>,
     /// Repository/worktree against which non-graph commands operate.
     pub repo_root: PathBuf,
     /// Worktree from which the command was invoked.
@@ -137,17 +138,38 @@ pub fn resolve_repo_root(override_root: Option<&Path>) -> MineResult<PathBuf> {
 /// present (commands that require initialization will fail later via
 /// [`CommandContext::require_config`]).
 pub fn build_context(global: &GlobalOpts) -> MineResult<CommandContext> {
+    let request = crate::infrastructure::git_evidence::GitRequestScope::join_or_new();
     let (authority_root, caller_root) = resolve_repo_roots(global.repo.as_deref())?;
     let repo_root = caller_root.clone();
     let config = load_config(&repo_root);
-    let store = TomlStore::new(&authority_root);
+    let root_config_path = authority_root.join(".mine/config.toml");
+    let store = match std::fs::read_to_string(&root_config_path) {
+        Ok(content) => TomlStore::from_configuration(
+            &authority_root,
+            &MineConfig::parse(&root_config_path, &content)?,
+        )?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            TomlStore::new(&authority_root)
+        }
+        Err(error) => return Err(error.into()),
+    };
     Ok(CommandContext {
+        _request: request,
         repo_root,
         caller_root,
         authority_root,
         config,
         store,
     })
+}
+
+/// A server outlives individual tool calls. Give each synchronous MCP call a
+/// fresh scope, including discovery, instead of inheriting the server clock.
+pub(crate) fn build_request_context(global: &GlobalOpts) -> MineResult<CommandContext> {
+    let request = crate::infrastructure::git_evidence::GitRequestScope::new();
+    let mut context = build_context(global)?;
+    context._request = Some(request);
+    Ok(context)
 }
 
 /// Loads `.mine/config.toml` if present, returning `None` when absent and
